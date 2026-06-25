@@ -16,5 +16,8 @@ Flask-Login==0.6.3
 PyJWT==2.9.0
 Flask-WTF==1.2.1
 
+# Production WSGI server
+gunicorn==23.0.0
+
 # Tests
 pytest==9.0.3

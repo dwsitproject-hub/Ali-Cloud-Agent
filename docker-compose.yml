@@ -1,14 +1,39 @@
-# Local PostgreSQL for Cloud Agent Monitoring.
+# Full local stack for Cloud Agent Monitoring (app + PostgreSQL).
 #
-# The app runs on the HOST (Windows: `start.bat`, or `python Backend/app.py`)
-# and connects to this container at localhost:5440. Port 5440 is used to avoid
-# clashing with any local Postgres on 5432.
+#   docker compose up --build        # build + run app and db together
+#   # then open http://localhost:5000  (click "Continue with dev login")
 #
-#   docker compose up -d db          # start Postgres
-#   flask --app Backend/app.py db upgrade   # create tables
-#   flask --app Backend/app.py seed         # load the 9 default instances + dev user
+# Or run only Postgres and the app on the host:
+#   docker compose up -d db          # Postgres only, exposed on localhost:5440
+#   (then: flask db upgrade && flask seed && python Backend/app.py)
+#
+# Port 5440 avoids clashing with any local Postgres on 5432. Inside the compose
+# network the app reaches Postgres at db:5432.
 #
 services:
+  app:
+    build: .
+    container_name: cloud-agent-app
+    depends_on:
+      db:
+        condition: service_healthy
+    environment:
+      # Test config: synthetic data, no Alibaba creds, dev login on.
+      MOCK_MODE: "true"
+      DEV_LOGIN_ENABLED: "true"
+      DATABASE_URL: postgresql+psycopg2://cloudagent:cloudagent@db:5432/cloudagent
+      SECRET_KEY: dev-insecure-change-me
+      SESSION_COOKIE_SECURE: "false"
+      SESSION_COOKIE_SAMESITE: Lax
+      ALERT_RECIPIENTS: dev@localhost
+    # Apply migrations + seed, then serve.
+    command: >
+      sh -c "python -m flask db upgrade &&
+             python -m flask seed &&
+             gunicorn --workers 1 --chdir Backend --bind 0.0.0.0:5000 wsgi:app"
+    ports:
+      - "5000:5000"
+
   db:
     image: postgres:16-alpine
     container_name: cloud-agent-db
