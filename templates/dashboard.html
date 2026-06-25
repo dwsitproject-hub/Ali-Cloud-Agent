@@ -1,0 +1,243 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Cloud Agent Monitoring</title>
+<style>
+  :root { --bg:#0f1419; --card:#1a2230; --line:#2a3546; --txt:#e6edf3; --mut:#8b98a8;
+          --ok:#27ae60; --bad:#e74c3c; --warn:#e0a800; --accent:#3b82f6; }
+  * { box-sizing:border-box; }
+  body { margin:0; background:var(--bg); color:var(--txt);
+         font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif; }
+  header { padding:20px 28px; border-bottom:1px solid var(--line);
+           display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; }
+  h1 { font-size:18px; margin:0; }
+  .sub { color:var(--mut); font-size:13px; margin-top:4px; }
+  .wrap { padding:24px 28px; max-width:1100px; margin:auto; }
+  .bar { display:flex; gap:10px; flex-wrap:wrap; align-items:center; margin-bottom:20px; }
+  button { background:var(--accent); color:#fff; border:0; padding:10px 16px; border-radius:8px;
+           font-size:14px; cursor:pointer; font-weight:600; }
+  button.ghost { background:transparent; border:1px solid var(--line); color:var(--txt); }
+  button:disabled { opacity:.5; cursor:not-allowed; }
+  .pill { font-size:12px; padding:4px 10px; border-radius:999px; border:1px solid var(--line); color:var(--mut); }
+  .pill.live { color:var(--ok); border-color:var(--ok); }
+  .pill.mock { color:var(--warn); border-color:var(--warn); }
+  .pill.bad { color:var(--bad); border-color:var(--bad); }
+  .group { margin-bottom:26px; }
+  .group-head { display:flex; align-items:baseline; gap:12px; margin:0 0 12px;
+                border-bottom:1px solid var(--line); padding-bottom:8px; }
+  .group-head h2 { font-size:15px; margin:0; }
+  .grid { display:grid; grid-template-columns:repeat(auto-fill,minmax(300px,1fr)); gap:14px; }
+  .card { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:14px 16px; }
+  .card.breach { border-color:var(--bad); box-shadow:0 0 0 1px var(--bad) inset; }
+  .inst-head { display:flex; justify-content:space-between; align-items:flex-start; gap:8px; margin-bottom:10px; }
+  .inst-name { font-size:15px; font-weight:700; }
+  .inst-id { font-size:11px; color:var(--mut); font-family:ui-monospace,Menlo,monospace; margin-top:2px; }
+  .chips { display:flex; gap:8px; flex-wrap:wrap; }
+  .chip { flex:1 1 0; min-width:74px; border:1px solid var(--line); border-radius:8px; padding:8px 10px; }
+  .chip-label { display:block; font-size:11px; color:var(--mut); text-transform:uppercase; letter-spacing:.4px; }
+  .chip-val { display:block; font-size:20px; font-weight:700; margin-top:3px; }
+  .chip .u { font-size:12px; font-weight:500; }
+  .chip.breach { border-color:var(--bad); } .chip.breach .chip-val { color:var(--bad); }
+  .chip.ok .chip-val { color:var(--ok); }
+  .chip.nodata { opacity:.55; } .chip.nodata .chip-val { color:var(--mut); }
+  .sec-label { font-size:10px; color:var(--mut); text-transform:uppercase; letter-spacing:.5px; margin:12px 0 6px; }
+  .services { display:flex; gap:6px; flex-wrap:wrap; }
+  .svc { display:inline-flex; align-items:center; gap:6px; font-size:12px; padding:4px 9px;
+         border:1px solid var(--line); border-radius:999px; color:var(--txt); }
+  .svc .dot { width:8px; height:8px; border-radius:50%; background:var(--mut); }
+  .svc.up .dot { background:var(--ok); } .svc.down .dot { background:var(--bad); }
+  .svc.down { border-color:var(--bad); color:var(--bad); }
+  .svc.unknown { opacity:.6; }
+  .svc .lat { color:var(--mut); font-size:11px; }
+  .status-tag { font-size:11px; padding:2px 8px; border-radius:999px; font-weight:700; white-space:nowrap; }
+  .status-tag.ok { background:rgba(39,174,96,.15); color:var(--ok); }
+  .status-tag.breach { background:rgba(231,76,60,.15); color:var(--bad); }
+  .panel { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:16px 18px; margin-bottom:18px; }
+  .panel h2 { font-size:14px; margin:0 0 10px; }
+  table { width:100%; border-collapse:collapse; font-size:13px; }
+  th,td { text-align:left; padding:6px 8px; border-bottom:1px solid var(--line); }
+  th { color:var(--mut); font-weight:600; font-size:11px; text-transform:uppercase; }
+  #toast { position:fixed; bottom:20px; right:20px; background:var(--card); border:1px solid var(--line);
+           padding:12px 16px; border-radius:10px; font-size:13px; opacity:0; transition:.3s; max-width:360px; }
+  #toast.show { opacity:1; }
+  .muted { color:var(--mut); font-size:12px; }
+  iframe.preview { width:100%; height:360px; border:1px solid var(--line); border-radius:8px; background:#fff; margin-top:10px; }
+</style>
+</head>
+<body>
+<header>
+  <div>
+    <h1>Cloud Agent Monitoring</h1>
+    <div class="sub">Agent 1 scans CloudMonitor + service health every {{ interval }} min &middot; Agent 2 sends DirectMail alerts</div>
+  </div>
+  <div>
+    {% if mock %}<span class="pill mock">MOCK MODE</span>
+    {% else %}<span class="pill live">LIVE</span>{% endif %}
+    <span class="pill">auto-alert: {{ 'on' if auto_alert else 'off' }}</span>
+  </div>
+</header>
+
+<div class="wrap">
+  <div class="bar">
+    <button id="scanBtn" onclick="scan()">Scan now</button>
+    <button id="sendBtn" class="ghost" onclick="send()">Send alert email</button>
+    <span class="pill" id="lastScan">last scan: -</span>
+    <span class="pill" id="breachPill">breaches: -</span>
+    <span class="pill" id="svcPill">services: -</span>
+  </div>
+
+  <div id="cards"><div class="muted">Loading...</div></div>
+
+  <div class="panel">
+    <h2>Last alert</h2>
+    <div id="alertBox" class="muted">No alert sent yet.</div>
+    <div id="previewWrap"></div>
+  </div>
+
+  <div class="panel">
+    <h2>Recent scans</h2>
+    <table>
+      <thead><tr><th>Time (UTC)</th><th>Mode</th><th>Breaches</th><th>Metrics</th></tr></thead>
+      <tbody id="histBody"><tr><td colspan="4" class="muted">-</td></tr></tbody>
+    </table>
+  </div>
+</div>
+
+<div id="toast"></div>
+
+<script>
+const $ = s => document.querySelector(s);
+function toast(msg){ const t=$('#toast'); t.textContent=msg; t.classList.add('show');
+  setTimeout(()=>t.classList.remove('show'), 3500); }
+
+function esc(s){ return (s==null?'':String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
+
+function metricChip(r){
+  const val = r.value===null ? '-' : `${r.value}<span class="u">${r.unit||''}</span>`;
+  const cls = r.breached ? 'breach' : (r.value===null ? 'nodata' : 'ok');
+  const title = r.error ? esc(r.error)
+              : `alert ${r.comparison} ${r.threshold}${r.unit||''} - ${r.source}`;
+  return `<div class="chip ${cls}" title="${title}">
+      <span class="chip-label">${esc(r.label)}</span>
+      <span class="chip-val">${val}</span>
+    </div>`;
+}
+
+function svcPill(s){
+  const cls = s.up===true ? 'up' : (s.up===false ? 'down' : 'unknown');
+  const lat = s.latency_ms!=null ? `<span class="lat">${s.latency_ms}ms</span>` : '';
+  const title = s.error || s.detail || s.target || s.name;
+  return `<span class="svc ${cls}" title="${esc(title)}"><span class="dot"></span>${esc(s.name)} ${lat}</span>`;
+}
+
+function renderCards(scan){
+  const c = $('#cards');
+  if(!scan){ c.innerHTML='<div class="muted">No scan yet.</div>'; return; }
+
+  // services grouped by instance
+  const svcByInst = {};
+  (scan.services||[]).forEach(s=>{ (svcByInst[s.instance_id]=svcByInst[s.instance_id]||[]).push(s); });
+
+  // metrics grouped by environment -> instance
+  const groups = {};
+  for(const r of scan.results){
+    const g = groups[r.group] || (groups[r.group]={});
+    const key = r.instance_id || r.instance_name;
+    (g[key] = g[key] || {name:r.instance_name, id:r.instance_id, metrics:[]}).metrics.push(r);
+  }
+
+  c.innerHTML = Object.entries(groups).map(([gname, insts])=>{
+    const instCount = Object.keys(insts).length;
+    let gBreaches=0, gDown=0;
+    Object.values(insts).forEach(i=>{ gBreaches+=i.metrics.filter(m=>m.breached).length;
+      gDown += (svcByInst[i.id]||[]).filter(s=>s.up===false).length; });
+    const cards = Object.values(insts).map(inst=>{
+      const svcs = svcByInst[inst.id]||[];
+      const anyDown = svcs.some(s=>s.up===false);
+      const problem = inst.metrics.some(m=>m.breached) || anyDown;
+      const svcBlock = svcs.length
+        ? `<div class="sec-label">Services</div><div class="services">${svcs.map(svcPill).join('')}</div>`
+        : '';
+      return `<div class="card ${problem?'breach':''}">
+        <div class="inst-head">
+          <div>
+            <div class="inst-name">${esc(inst.name)}</div>
+            <div class="inst-id">${esc(inst.id)}</div>
+          </div>
+          ${problem?'<span class="status-tag breach">ATTENTION</span>'
+                   :'<span class="status-tag ok">OK</span>'}
+        </div>
+        <div class="chips">${inst.metrics.map(metricChip).join('')}</div>
+        ${svcBlock}
+      </div>`;
+    }).join('');
+    const summ = [`${instCount} instance${instCount!==1?'s':''}`];
+    if(gBreaches) summ.push(`<span style="color:var(--bad)">${gBreaches} breach</span>`);
+    if(gDown) summ.push(`<span style="color:var(--bad)">${gDown} svc down</span>`);
+    if(!gBreaches && !gDown) summ.push('all ok');
+    return `<section class="group">
+      <div class="group-head">
+        <h2>${esc(gname)}</h2>
+        <span class="muted">${summ.join(' &middot; ')}</span>
+      </div>
+      <div class="grid">${cards}</div>
+    </section>`;
+  }).join('');
+
+  $('#lastScan').textContent = 'last scan: ' + (scan.scanned_at||'-').replace('T',' ').slice(0,19);
+  $('#breachPill').textContent = `breaches: ${scan.breach_count}/${scan.total}`;
+  const sd = scan.services_down_count||0, st = scan.services_total||0;
+  const sp = $('#svcPill');
+  sp.textContent = `services: ${st-sd}/${st} up`;
+  sp.className = 'pill' + (sd>0 ? ' bad' : '');
+}
+
+function renderAlert(a){
+  if(!a){ $('#alertBox').textContent='No alert sent yet.'; $('#previewWrap').innerHTML=''; return; }
+  const who = (a.recipients||[]).join(', ') || '-';
+  const status = a.sent ? `<span style="color:var(--ok)">sent</span>`
+                        : `<span style="color:var(--warn)">${a.reason||'not sent'}</span>`;
+  $('#alertBox').innerHTML =
+    `<b>${esc(a.subject||'')}</b><br><span class="muted">to ${esc(who)} - ${esc(a.trigger||'')} - ${status} - ${(a.sent_at||'').replace('T',' ').slice(0,19)} UTC</span>`;
+  if(a.preview_html){
+    $('#previewWrap').innerHTML =
+      `<div class="muted" style="margin-top:8px">Email preview:</div><iframe class="preview"></iframe>`;
+    const doc = $('#previewWrap iframe').contentWindow.document;
+    doc.open(); doc.write(a.preview_html); doc.close();
+  } else { $('#previewWrap').innerHTML=''; }
+}
+
+function renderHist(h){
+  const b=$('#histBody');
+  if(!h||!h.length){ b.innerHTML='<tr><td colspan="4" class="muted">-</td></tr>'; return; }
+  b.innerHTML = h.map(x=>`<tr>
+    <td>${(x.scanned_at||'').replace('T',' ').slice(0,19)}</td>
+    <td>${x.mode||''}</td>
+    <td style="color:${x.breach_count?'var(--bad)':'var(--mut)'}">${x.breach_count}</td>
+    <td>${x.total}</td></tr>`).join('');
+}
+
+async function refresh(){
+  const r = await fetch('/api/status'); const s = await r.json();
+  renderCards(s.last_scan); renderAlert(s.last_alert); renderHist(s.history);
+}
+async function scan(){
+  $('#scanBtn').disabled=true;
+  try{ const r=await fetch('/api/scan',{method:'POST'}); const s=await r.json();
+    renderCards(s); toast(`Scan done - ${s.breach_count} breach(es), ${s.services_down_count||0} svc down`); await refresh(); }
+  finally{ $('#scanBtn').disabled=false; }
+}
+async function send(){
+  $('#sendBtn').disabled=true;
+  try{ const r=await fetch('/api/send',{method:'POST'}); const a=await r.json();
+    a.trigger='manual'; toast(a.sent?'Alert email sent':(a.reason||'Email not sent')); await refresh(); }
+  finally{ $('#sendBtn').disabled=false; }
+}
+
+refresh();
+setInterval(refresh, 15000);
+</script>
+</body>
+</html>

@@ -1,0 +1,90 @@
+"""Cloud Agent Monitoring - Flask app.
+
+Endpoints
+  GET  /              dashboard UI
+  GET  /api/status    latest scan + alert + history (JSON)
+  POST /api/scan      run Agent 1 now (optional ?auto_alert=true)
+  POST /api/send      run Agent 2 now against the latest scan (the "Send" button)
+  GET  /api/health    liveness probe
+
+On startup it starts the 5-min scheduler, which runs the first scan immediately
+in the background so the server begins serving right away.
+"""
+from __future__ import annotations
+
+import atexit
+import logging
+
+from flask import Flask, jsonify, render_template, request
+
+import config
+import scheduler
+import state
+from agents import agent2_alerter
+
+logging.basicConfig(level=logging.INFO,
+                    format="%(asctime)s %(levelname)s %(name)s: %(message)s")
+
+app = Flask(__name__)
+
+
+@app.route("/")
+def dashboard():
+    return render_template("dashboard.html",
+                           interval=config.SCAN_INTERVAL_MINUTES,
+                           mock=config.MOCK_MODE or not config.credentials_present(),
+                           auto_alert=config.AUTO_ALERT_ON_BREACH,
+                           recipients=config.ALERT_RECIPIENTS)
+
+
+@app.route("/api/health")
+def health():
+    return jsonify(ok=True)
+
+
+@app.route("/api/status")
+def status():
+    snap = state.snapshot()
+    snap["config"] = {
+        "mode": "mock" if (config.MOCK_MODE or not config.credentials_present()) else "live",
+        "interval_minutes": config.SCAN_INTERVAL_MINUTES,
+        "auto_alert_on_breach": config.AUTO_ALERT_ON_BREACH,
+        "recipients": config.ALERT_RECIPIENTS,
+    }
+    return jsonify(snap)
+
+
+@app.route("/api/scan", methods=["POST"])
+def scan_now():
+    auto = request.args.get("auto_alert", "false").lower() in ("1", "true", "yes")
+    scan = scheduler.run_scan_job(auto_alert=auto)
+    return jsonify(scan)
+
+
+@app.route("/api/send", methods=["POST"])
+def send_now():
+    """The Send button - fire Agent 2 against the most recent scan."""
+    snap = state.snapshot()
+    scan = snap.get("last_scan")
+    if not scan:
+        scan = scheduler.run_scan_job(auto_alert=False)  # nothing scanned yet
+    alert = agent2_alerter.send_alert(scan)
+    alert["trigger"] = "manual"
+    state.set_last_alert(alert)
+    return jsonify(alert)
+
+
+def _bootstrap():
+    # Start the scheduler; it runs the first scan immediately in a background
+    # thread (so the server starts serving right away instead of blocking on
+    # ~27 live API calls). The dashboard shows "loading" until the first scan
+    # lands, then auto-refreshes.
+    scheduler.start()
+    atexit.register(scheduler.shutdown)
+
+
+if __name__ == "__main__":
+    _bootstrap()
+    # use_reloader=False so the scheduler isn't started twice
+    app.run(host=config.FLASK_HOST, port=config.FLASK_PORT,
+            debug=False, use_reloader=False)

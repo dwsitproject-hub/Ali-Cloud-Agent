@@ -1,0 +1,7 @@
+# Cloud Agent Monitoring — Python backend
+Flask==3.0.3
+APScheduler==3.10.4
+python-dotenv==1.0.1
+
+# Alibaba Cloud SDK (RPC-style, product-agnostic via CommonRequest)
+aliyun-python-sdk-core==2.16.0

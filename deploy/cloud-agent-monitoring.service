@@ -1,0 +1,39 @@
+[Unit]
+Description=Cloud Agent Monitoring (Agent 1 CloudMonitor scanner + Agent 2 DirectMail alerter)
+Documentation=file:/opt/cloud-agent-monitoring/README.md
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# Dedicated, unprivileged user (create it: see README deploy steps).
+User=cloudagent
+Group=cloudagent
+
+# Where the project lives on the ECS box. load_dotenv() reads ./.env from here.
+WorkingDirectory=/opt/cloud-agent-monitoring
+
+# Run the app in its virtualenv. app.py's __main__ bootstraps the first scan and
+# starts the 5-min APScheduler in-process (single process => single scheduler).
+ExecStart=/opt/cloud-agent-monitoring/.venv/bin/python app.py
+
+# Keep it alive across crashes / reboots.
+Restart=always
+RestartSec=5
+TimeoutStopSec=20
+
+# Logs go to the journal (view with: journalctl -u cloud-agent-monitoring -f)
+StandardOutput=journal
+StandardError=journal
+
+# --- Hardening ---
+NoNewPrivileges=true
+PrivateTmp=true
+ProtectSystem=full
+ProtectHome=true
+ProtectControlGroups=true
+ProtectKernelModules=true
+RestrictSUIDSGID=true
+
+[Install]
+WantedBy=multi-user.target
