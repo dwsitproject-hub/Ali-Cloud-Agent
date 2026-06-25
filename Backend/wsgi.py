@@ -16,8 +16,9 @@ import sys
 # `scheduler`, `from agents import ...`.
 sys.path.insert(0, os.path.dirname(os.path.abspath(__file__)))
 
-from app import _bootstrap, app  # noqa: E402
+from app import _bootstrap, create_app  # noqa: E402
 
-_bootstrap()
+app = create_app()
+_bootstrap(app)
 
 __all__ = ["app"]

@@ -19,6 +19,7 @@ from agents import agent1_scanner, agent2_alerter
 log = logging.getLogger("scheduler")
 
 _scheduler = None
+_app = None  # Flask app captured at start(), for background-thread app contexts
 
 
 def run_scan_job(auto_alert=None) -> dict:
@@ -59,8 +60,19 @@ def run_scan_job(auto_alert=None) -> dict:
     return scan
 
 
-def start() -> BackgroundScheduler:
-    global _scheduler
+def _scan_job() -> None:
+    """APScheduler entry point. Runs in a background thread with no request
+    context, so push the captured Flask app context for DB access."""
+    if _app is not None:
+        with _app.app_context():
+            run_scan_job()
+    else:
+        run_scan_job()
+
+
+def start(app=None) -> BackgroundScheduler:
+    global _scheduler, _app
+    _app = app
     if _scheduler is not None:
         return _scheduler
 
@@ -68,7 +80,7 @@ def start() -> BackgroundScheduler:
 
     _scheduler = BackgroundScheduler(daemon=True)
     _scheduler.add_job(
-        run_scan_job,
+        _scan_job,
         trigger="interval",
         minutes=config.SCAN_INTERVAL_MINUTES,
         id="cloudmonitor_scan",
