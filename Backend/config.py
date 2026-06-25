@@ -48,6 +48,25 @@ HEALTHCHECK_TIMEOUT = float(os.getenv("HEALTHCHECK_TIMEOUT", "5"))
 FLASK_HOST = os.getenv("FLASK_HOST", "127.0.0.1")
 FLASK_PORT = int(os.getenv("FLASK_PORT", "5000"))
 
+# --- Database (PostgreSQL) ---------------------------------------------------
+# Default points at the local docker-compose Postgres (see docker-compose.yml).
+DATABASE_URL = os.getenv(
+    "DATABASE_URL",
+    "postgresql+psycopg2://cloudagent:cloudagent@localhost:5440/cloudagent",
+).strip()
+
+# --- Auth / SSO (see Docs/SSO-TARGET-APP-INTEGRATION.md, used in Phase 7) -----
+SECRET_KEY = os.getenv("SECRET_KEY", "dev-insecure-change-me").strip()
+SSO_TOKEN_SECRET = os.getenv("SSO_TOKEN_SECRET", "").strip()
+SSO_TOKEN_LEEWAY = int(os.getenv("SSO_TOKEN_LEEWAY", "10"))
+# Dev login bypass (no Hub needed). Defaults ON whenever MOCK_MODE is on.
+DEV_LOGIN_ENABLED = _b("DEV_LOGIN_ENABLED", MOCK_MODE)
+DEV_LOGIN_EMAIL = os.getenv("DEV_LOGIN_EMAIL", "dev@localhost").strip()
+# Cross-site SSO landing needs SameSite=None; Secure (HTTPS). Relax for local HTTP.
+SESSION_COOKIE_SECURE = _b("SESSION_COOKIE_SECURE", not DEV_LOGIN_ENABLED)
+SESSION_COOKIE_SAMESITE = os.getenv(
+    "SESSION_COOKIE_SAMESITE", "Lax" if DEV_LOGIN_ENABLED else "None").strip()
+
 
 # --- What to monitor ---------------------------------------------------------
 # Each instance: id, name, role (drives default service checks), and host (the

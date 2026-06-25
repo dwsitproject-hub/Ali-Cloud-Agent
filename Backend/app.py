@@ -18,18 +18,22 @@ import logging
 from pathlib import Path
 
 from flask import Blueprint, Flask, jsonify, render_template, request
+from flask_migrate import Migrate
 
 import config
 import scheduler
+import seed
 import state
 from agents import agent2_alerter
+from db import db
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
+_BASE_DIR = Path(__file__).resolve().parent
 # Templates + static assets live in the sibling Frontend/ folder (one level up
 # from Backend/), not under the Python package.
-_FRONTEND = Path(__file__).resolve().parent.parent / "Frontend"
+_FRONTEND = _BASE_DIR.parent / "Frontend"
 
 main_bp = Blueprint("main", __name__)
 
@@ -85,6 +89,18 @@ def create_app() -> Flask:
     app = Flask(__name__,
                 template_folder=str(_FRONTEND / "templates"),
                 static_folder=str(_FRONTEND / "static"))
+    app.config.update(
+        SECRET_KEY=config.SECRET_KEY,
+        SQLALCHEMY_DATABASE_URI=config.DATABASE_URL,
+        SQLALCHEMY_TRACK_MODIFICATIONS=False,
+    )
+
+    db.init_app(app)
+    # Import models so Flask-Migrate's autogenerate sees every table.
+    import models  # noqa: F401
+    Migrate(app, db, directory=str(_BASE_DIR / "migrations"))
+    seed.register_cli(app)
+
     app.register_blueprint(main_bp)
     return app
 

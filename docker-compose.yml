@@ -1,0 +1,30 @@
+# Local PostgreSQL for Cloud Agent Monitoring.
+#
+# The app runs on the HOST (Windows: `start.bat`, or `python Backend/app.py`)
+# and connects to this container at localhost:5440. Port 5440 is used to avoid
+# clashing with any local Postgres on 5432.
+#
+#   docker compose up -d db          # start Postgres
+#   flask --app Backend/app.py db upgrade   # create tables
+#   flask --app Backend/app.py seed         # load the 9 default instances + dev user
+#
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: cloud-agent-db
+    environment:
+      POSTGRES_USER: cloudagent
+      POSTGRES_PASSWORD: cloudagent
+      POSTGRES_DB: cloudagent
+    ports:
+      - "5440:5432"
+    volumes:
+      - cloud_agent_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U cloudagent"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  cloud_agent_pgdata:
