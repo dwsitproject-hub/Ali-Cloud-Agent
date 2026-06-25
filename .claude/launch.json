@@ -1,0 +1,11 @@
+{
+  "version": "0.0.1",
+  "configurations": [
+    {
+      "name": "cloud-agent-monitoring",
+      "runtimeExecutable": "python",
+      "runtimeArgs": ["Backend/app.py"],
+      "port": 5000
+    }
+  ]
+}

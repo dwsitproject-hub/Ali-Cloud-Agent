@@ -11,25 +11,49 @@ A two-agent cloud monitoring service with a live dashboard.
   any threshold is breached.
 - A **Flask dashboard** shows the latest scan, lets you scan on demand, and has a
   **Send** button to fire the alert email manually.
+- **PostgreSQL** stores the monitored inventory, scan/alert history, and users.
+- **SSO login** (Downstream Hub) gates every page; a **register page** lets you
+  add/manage monitored instances without editing code.
 
-The three things this build wired up:
+Code is organized into `Backend/` (Python), `Frontend/` (templates + static),
+`Docs/`, and `Assets/`.
 
-1. **Real CloudMonitor API** — `agents/agent1_scanner.py` makes signed
-   `DescribeMetricLast` calls and parses the `Datapoints` JSON (no more simulated scan).
-2. **Real email sender** — `agents/agent2_alerter.py` sends via Alibaba DirectMail.
-3. **Scheduling** — `scheduler.py` runs the scan on a 5-minute cron (APScheduler)
-   and auto-sends on breach.
+The pieces this build wired up:
+
+1. **Real CloudMonitor API** — `Backend/agents/agent1_scanner.py` makes signed
+   `DescribeMetricLast` calls and parses the `Datapoints` JSON.
+2. **Real email sender** — `Backend/agents/agent2_alerter.py` sends via DirectMail.
+3. **Scheduling** — `Backend/scheduler.py` runs the scan on a 5-minute cron and
+   auto-sends on breach.
+4. **PostgreSQL + migrations** — inventory and history persist across restarts.
+5. **SSO + dev login** — `Backend/auth/sso.py` verifies the Hub's HS256 JWT.
 
 ## Quick start (mock mode — no credentials needed)
 
+Requires Docker (for Postgres) and Python 3.
+
 ```bash
-pip install -r requirements.txt
-cp .env.example .env          # MOCK_MODE=true by default
-python app.py                 # open http://127.0.0.1:5000
+pip install -r Backend/requirements.txt
+cp .env.example .env                 # MOCK_MODE=true, DEV_LOGIN_ENABLED=true
+
+docker compose up -d db              # PostgreSQL on host port 5440
+
+# create tables + load the 9 default instances and a dev user
+export PYTHONPATH=Backend FLASK_APP=app   # PowerShell: $env:PYTHONPATH="Backend"; $env:FLASK_APP="app"
+python -m flask db upgrade
+python -m flask seed
+
+python Backend/app.py                # open http://127.0.0.1:5000
 ```
 
+On Windows you can instead double-click **`start.bat`** (it installs deps and
+runs the app; run the `docker compose` + `flask db upgrade` + `flask seed` steps
+once first).
+
 In mock mode the scanner generates synthetic metric values (some breach, so you
-can see alerts) and Agent 2 renders the email but does **not** transmit it.
+can see alerts) and Agent 2 renders the email but does **not** transmit it. The
+dashboard is behind login — with `DEV_LOGIN_ENABLED=true` (default in mock mode)
+click **Continue with dev login** at `/auth/login`.
 
 ## Going live
 
@@ -42,58 +66,77 @@ can see alerts) and Agent 2 renders the email but does **not** transmit it.
    MOCK_MODE=false
    ALIBABA_ACCESS_KEY_ID=LTAI...
    ALIBABA_ACCESS_KEY_SECRET=********
-   CLOUDMONITOR_REGION=cn-hangzhou
-   DIRECTMAIL_REGION=cn-hangzhou
+   CLOUDMONITOR_REGION=ap-southeast-5
+   DIRECTMAIL_REGION=ap-southeast-1
    DM_ACCOUNT_NAME=alert@mail.yourdomain.com
    ALERT_RECIPIENTS=you@example.com,ops@example.com
+
+   # Database + auth (required)
+   DATABASE_URL=postgresql+psycopg2://user:pass@db-host:5432/cloudagent
+   SECRET_KEY=<random; python -c "import secrets;print(secrets.token_urlsafe(48))">
+   SSO_TOKEN_SECRET=<shared secret from the Hub operator>
+   DEV_LOGIN_ENABLED=false       # real SSO only in production
+   SESSION_COOKIE_SAMESITE=None  # cross-site SSO landing (needs HTTPS)
+   SESSION_COOKIE_SECURE=true
    ```
 
-4. `python app.py`. The app will now make real API calls.
+4. `python Backend/app.py`. The app will now make real API calls and require SSO.
 
 Credentials are read from the environment only — nothing is hard-coded, and
-`.env` is git-ignored.
+`.env` is git-ignored. See `Docs/SSO-TARGET-APP-INTEGRATION.md` for the SSO
+contract (the Hub POSTs an HS256 JWT to `/auth/hub`).
 
 ## Configuring what to monitor
 
-Default metrics (ECS CPU/memory/disk, RDS CPU) and their thresholds live in
-`config.py` (`DEFAULT_METRICS`). To override without editing code, drop a
-`metrics.json` file next to `config.py`:
+The monitored inventory lives in **PostgreSQL**. Use the **register page** at
+`/instances` (linked from the dashboard) to add an instance — its ECS id, display
+name, `role` (selects the default service checks), `host` (IP/DNS for probes;
+blank skips them), and group — or enable/disable/delete existing ones. Changes
+are picked up on the next scan; no code edit or restart needed.
 
-```json
-[
-  {
-    "key": "ecs_cpu", "label": "ECS CPU", "namespace": "acs_ecs_dashboard",
-    "metric_name": "CPUUtilization", "period": "60",
-    "dimensions": "[{\"instanceId\":\"i-xxxx\"}]",
-    "stat": "Average", "threshold": 80.0, "comparison": ">", "unit": "%"
-  }
-]
-```
-
-`dimensions` is optional; supply it to target a specific instance. Namespaces and
+`flask seed` loads an initial 9 instances from `config.INSTANCE_GROUPS` (seed data
+only). Metric definitions/thresholds (`METRIC_TEMPLATES`) and the per-role service
+checks (`SERVICE_CHECKS_BY_ROLE`) remain in `Backend/config.py`. Namespaces and
 metric names come from CloudMonitor's *Appendix 1: Metrics*.
 
 ## HTTP API
 
-| Method | Path          | Purpose                                            |
-|--------|---------------|----------------------------------------------------|
-| GET    | `/`           | Dashboard UI                                       |
-| GET    | `/api/status` | Latest scan + last alert + recent history (JSON)   |
-| POST   | `/api/scan`   | Run Agent 1 now (`?auto_alert=true` to also alert) |
-| POST   | `/api/send`   | Run Agent 2 against the latest scan (Send button)  |
-| GET    | `/api/health` | Liveness probe                                     |
+All routes require a login session except `/api/health` and `/auth/*`. Anonymous
+`/api/*` calls return `401` JSON; pages redirect to `/auth/login`.
+
+| Method      | Path                   | Purpose                                       |
+|-------------|------------------------|-----------------------------------------------|
+| GET         | `/`                    | Dashboard UI                                  |
+| GET         | `/api/status`          | Latest scan + last alert + history (JSON)     |
+| POST        | `/api/scan`            | Run Agent 1 now (`?auto_alert=true`)          |
+| POST        | `/api/send`            | Run Agent 2 against the latest scan           |
+| GET         | `/api/health`          | Liveness probe (public)                       |
+| GET         | `/instances`           | Register / manage instances page              |
+| GET/POST    | `/api/instances`       | List / create instances                       |
+| PATCH/DELETE| `/api/instances/<id>`  | Toggle enabled / edit / delete                |
+| POST        | `/auth/hub`            | SSO entry — Hub posts an HS256 JWT            |
+| GET/POST    | `/auth/dev-login`      | Local dev login (gated by `DEV_LOGIN_ENABLED`)|
+| GET         | `/auth/login`,`/logout`| Login page / sign out                         |
 
 ## Files
 
 ```
-app.py                  Flask app, routes, startup (first scan + scheduler)
-scheduler.py            APScheduler: 5-min scan + auto-alert on breach
-config.py               Env config + metric/threshold definitions
-cloud_client.py         Signed Alibaba RPC client (CommonRequest)
-state.py                In-memory last-scan / last-alert / history store
-agents/agent1_scanner.py   CloudMonitor scan + threshold evaluation
-agents/agent2_alerter.py   DirectMail email composition + send
-templates/dashboard.html   Dashboard UI
+Backend/
+  app.py                  create_app() factory, blueprints, login guard
+  scheduler.py            APScheduler: 5-min scan + auto-alert (app-context job)
+  config.py               Env config + metric templates / per-role checks (+ seed data)
+  cloud_client.py         Signed Alibaba RPC client (CommonRequest)
+  db.py / models.py       SQLAlchemy instance + ORM models
+  state.py                DB-backed persist + snapshot() reconstruction
+  seed.py                 `flask seed` (idempotent inventory + dev user)
+  instances_api.py        Register/manage-instances page + CRUD API
+  auth/sso.py             SSO (/auth/hub) + dev login + session
+  agents/agent1_scanner.py   CloudMonitor scan + threshold evaluation
+  agents/agent2_alerter.py   DirectMail email composition + send
+  migrations/             Alembic migrations
+  tests/                  pytest (contract, instances CRUD, auth)
+Frontend/templates/       dashboard.html, register_instance.html, login.html
+docker-compose.yml        Local PostgreSQL (host port 5440)
 ```
 
 ## Enable memory & disk metrics (install the CloudMonitor agent)
@@ -157,7 +200,11 @@ sudo useradd --system --no-create-home --shell /usr/sbin/nologin cloudagent
 # 2. Virtualenv + dependencies
 cd /opt/cloud-agent-monitoring
 sudo python3 -m venv .venv
-sudo .venv/bin/pip install -r requirements.txt
+sudo .venv/bin/pip install -r Backend/requirements.txt
+
+# 2b. Provision the database (point DATABASE_URL at your Postgres first)
+sudo PYTHONPATH=Backend FLASK_APP=app .venv/bin/python -m flask db upgrade
+sudo PYTHONPATH=Backend FLASK_APP=app .venv/bin/python -m flask seed
 
 # 3. Lock down the secret file and hand ownership to the service user
 sudo chown -R cloudagent:cloudagent /opt/cloud-agent-monitoring
@@ -195,19 +242,22 @@ HTTPS in front rather than exposing Flask's built-in server. For higher traffic,
 swap `ExecStart` to gunicorn with **one** worker:
 
 ```ini
-ExecStart=/opt/cloud-agent-monitoring/.venv/bin/gunicorn --workers 1 --bind 127.0.0.1:5000 wsgi:app
+ExecStart=/opt/cloud-agent-monitoring/.venv/bin/gunicorn --workers 1 --chdir Backend --bind 127.0.0.1:5000 wsgi:app
 ```
 
-(`wsgi.py` runs the bootstrap so the scheduler still starts. More than one worker
-would duplicate the scheduler and double every scan/alert.)
+(`Backend/wsgi.py` runs the bootstrap so the scheduler still starts. More than one
+worker would duplicate the scheduler and double every scan/alert.)
 
 ## Production notes
 
-- `state.py` is in-memory and fine for a single process. For multiple workers or
-  instances, back it with Redis or a database.
-- Run under a process manager (systemd, supervisor) or a container so the
-  scheduler stays alive. Use a single worker, or move the scheduler to its own
-  process so the cron job isn't duplicated.
+- State and history live in **PostgreSQL**, but the **scheduler must still be a
+  single process** (one APScheduler). Keep gunicorn at `--workers 1`, or move the
+  scheduler to its own process if you scale web workers.
+- Provide a strong `SECRET_KEY` and the Hub's `SSO_TOKEN_SECRET`; set
+  `DEV_LOGIN_ENABLED=false`, `SESSION_COOKIE_SECURE=true`, and serve over HTTPS so
+  the cross-site SSO landing (`SameSite=None`) works.
+- Run DB migrations (`flask db upgrade`) on deploy. Scan history grows ~50 rows
+  per cycle — add pruning if retention matters.
 - DirectMail throttles and requires a warmed, verified domain; check send quotas.
 
 ## Service health checks (Datadog-style)
@@ -224,11 +274,12 @@ These confirm a service (typically a docker container's published port) is up an
 answering. Probes run from wherever the app runs, so that host must be able to
 reach each server's ports (same VPC private IPs, or public IP + security group).
 
-### Configure (config.py -> INSTANCE_GROUPS)
+### Configure (register page + `SERVICE_CHECKS_BY_ROLE`)
 
-Each instance has a `role` and a `host`. Set `host` to the IP/DNS the monitor can
-reach; leave it blank to skip that server (its services show as "unconfigured",
-never "down"). The `role` selects the default checks from `SERVICE_CHECKS_BY_ROLE`:
+Each instance has a `role` and a `host`, set on the `/instances` register page.
+Set `host` to the IP/DNS the monitor can reach; leave it blank to skip that server
+(its services show as "unconfigured", never "down"). The `role` selects the
+default checks from `SERVICE_CHECKS_BY_ROLE` in `Backend/config.py`:
 
   db       -> MySQL 3306, SSH 22
   frontend -> HTTP 80, HTTPS 443, SSH 22
