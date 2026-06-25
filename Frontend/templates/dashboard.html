@@ -3,6 +3,7 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
+{% if csrf_token is defined %}<meta name="csrf-token" content="{{ csrf_token() }}">{% endif %}
 <title>Cloud Agent Monitoring</title>
 <style>
   :root { --bg:#0f1419; --card:#1a2230; --line:#2a3546; --txt:#e6edf3; --mut:#8b98a8;
@@ -110,6 +111,8 @@
 
 <script>
 const $ = s => document.querySelector(s);
+const csrf = document.querySelector('meta[name="csrf-token"]')?.content;
+function postHeaders(){ const h={}; if(csrf) h['X-CSRFToken']=csrf; return h; }
 function toast(msg){ const t=$('#toast'); t.textContent=msg; t.classList.add('show');
   setTimeout(()=>t.classList.remove('show'), 3500); }
 
@@ -220,19 +223,24 @@ function renderHist(h){
     <td>${x.total}</td></tr>`).join('');
 }
 
+function authGuard(r){ if(r.status===401){ window.location='/auth/login'; return true; } return false; }
+
 async function refresh(){
-  const r = await fetch('/api/status'); const s = await r.json();
+  const r = await fetch('/api/status'); if(authGuard(r)) return;
+  const s = await r.json();
   renderCards(s.last_scan); renderAlert(s.last_alert); renderHist(s.history);
 }
 async function scan(){
   $('#scanBtn').disabled=true;
-  try{ const r=await fetch('/api/scan',{method:'POST'}); const s=await r.json();
+  try{ const r=await fetch('/api/scan',{method:'POST',headers:postHeaders()}); if(authGuard(r)) return;
+    const s=await r.json();
     renderCards(s); toast(`Scan done - ${s.breach_count} breach(es), ${s.services_down_count||0} svc down`); await refresh(); }
   finally{ $('#scanBtn').disabled=false; }
 }
 async function send(){
   $('#sendBtn').disabled=true;
-  try{ const r=await fetch('/api/send',{method:'POST'}); const a=await r.json();
+  try{ const r=await fetch('/api/send',{method:'POST',headers:postHeaders()}); if(authGuard(r)) return;
+    const a=await r.json();
     a.trigger='manual'; toast(a.sent?'Alert email sent':(a.reason||'Email not sent')); await refresh(); }
   finally{ $('#sendBtn').disabled=false; }
 }

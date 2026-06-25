@@ -17,8 +17,11 @@ import atexit
 import logging
 from pathlib import Path
 
-from flask import Blueprint, Flask, jsonify, render_template, request
+from flask import (Blueprint, Flask, jsonify, redirect, render_template,
+                   request, url_for)
+from flask_login import LoginManager, current_user
 from flask_migrate import Migrate
+from flask_wtf.csrf import CSRFProtect
 
 import config
 import scheduler
@@ -26,6 +29,12 @@ import seed
 import state
 from agents import agent2_alerter
 from db import db
+
+# Endpoints reachable without a login session.
+_PUBLIC_ENDPOINTS = {
+    "static", "main.health",
+    "auth.login", "auth.hub", "auth.dev_login", "auth.logout",
+}
 
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
@@ -93,6 +102,9 @@ def create_app() -> Flask:
         SECRET_KEY=config.SECRET_KEY,
         SQLALCHEMY_DATABASE_URI=config.DATABASE_URL,
         SQLALCHEMY_TRACK_MODIFICATIONS=False,
+        SESSION_COOKIE_HTTPONLY=True,
+        SESSION_COOKIE_SAMESITE=config.SESSION_COOKIE_SAMESITE,
+        SESSION_COOKIE_SECURE=config.SESSION_COOKIE_SECURE,
     )
 
     db.init_app(app)
@@ -101,9 +113,39 @@ def create_app() -> Flask:
     Migrate(app, db, directory=str(_BASE_DIR / "migrations"))
     seed.register_cli(app)
 
+    # --- Auth: CSRF + login session ---
+    csrf = CSRFProtect(app)
+
+    login_manager = LoginManager(app)
+    login_manager.login_view = "auth.login"
+
+    @login_manager.user_loader
+    def load_user(user_id):
+        return db.session.get(models.User, user_id)
+
+    @login_manager.unauthorized_handler
+    def _unauthorized():
+        # JSON for API callers (the dashboard polls /api/*); redirect for pages.
+        if request.path.startswith("/api/"):
+            return jsonify(error="authentication required"), 401
+        return redirect(url_for("auth.login"))
+
+    @app.before_request
+    def _require_login():
+        if request.endpoint in _PUBLIC_ENDPOINTS:
+            return None
+        if current_user.is_authenticated:
+            return None
+        return _unauthorized()
+
+    from auth.sso import auth_bp
     from instances_api import instances_bp
     app.register_blueprint(main_bp)
     app.register_blueprint(instances_bp)
+    app.register_blueprint(auth_bp)
+    # The Hub's cross-site POST carries no CSRF token; the JWT signature is the
+    # authenticity check, so exempt just that endpoint.
+    csrf.exempt(app.view_functions["auth.hub"])
     return app
 
 

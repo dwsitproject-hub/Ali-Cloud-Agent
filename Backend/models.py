@@ -15,6 +15,8 @@ from __future__ import annotations
 
 from datetime import datetime, timezone
 
+from flask_login import UserMixin
+
 from db import db
 
 
@@ -41,7 +43,7 @@ def enabled_instance_dicts() -> list:
     ]
 
 
-class User(db.Model):
+class User(UserMixin, db.Model):
     __tablename__ = "users"
     # Hub user_id (UUID string) is the stable primary key.
     id = db.Column(db.String(36), primary_key=True)

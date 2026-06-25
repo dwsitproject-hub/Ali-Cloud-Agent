@@ -10,20 +10,8 @@ This test boots the app in MOCK_MODE and asserts every field the frontend reads
 is present with an acceptable type. It is the regression guard for the whole
 production refactor: each phase must keep these shapes byte-stable.
 
-The client helper supports BOTH the current module-level `app.app` and the
-post-refactor `app.create_app()` factory, so the test survives Phase 2.
+The authenticated `client` fixture (conftest) logs in via the dev-login bypass.
 """
-import importlib
-
-
-def _get_client():
-    app_mod = importlib.import_module("app")
-    if hasattr(app_mod, "create_app"):
-        flask_app = app_mod.create_app()
-    else:
-        flask_app = app_mod.app
-    flask_app.config["TESTING"] = True
-    return flask_app.test_client()
 
 
 # --- Field contracts the dashboard JS depends on ---------------------------
@@ -55,15 +43,13 @@ def _assert_scan_shape(scan):
         assert s["up"] in (True, False, None)
 
 
-def test_scan_endpoint_shape():
-    client = _get_client()
+def test_scan_endpoint_shape(client):
     resp = client.post("/api/scan")
     assert resp.status_code == 200
     _assert_scan_shape(resp.get_json())
 
 
-def test_status_endpoint_shape():
-    client = _get_client()
+def test_status_endpoint_shape(client):
     client.post("/api/scan")  # ensure there is a last_scan
     resp = client.get("/api/status")
     assert resp.status_code == 200
@@ -75,8 +61,7 @@ def test_status_endpoint_shape():
         assert HISTORY_FIELDS <= set(h), f"missing history keys: {HISTORY_FIELDS - set(h)}"
 
 
-def test_send_endpoint_shape():
-    client = _get_client()
+def test_send_endpoint_shape(client):
     client.post("/api/scan")
     resp = client.post("/api/send")
     assert resp.status_code == 200

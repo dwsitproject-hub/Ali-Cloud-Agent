@@ -3,25 +3,16 @@
 Uses a unique temp instance id in the existing "Production" group and cleans up
 after itself so the seeded inventory is left intact.
 """
-import importlib
-
 TEMP_ID = "i-pytest-temp-0001"
 
 
-def _client():
-    app_mod = importlib.import_module("app")
-    flask_app = app_mod.create_app()
-    flask_app.config["TESTING"] = True
-    return flask_app.test_client()
-
-
-def _ids_in_scan(client):
-    scan = client.post("/api/scan").get_json()
+def _ids_in_scan(c):
+    scan = c.post("/api/scan").get_json()
     return {r["instance_id"] for r in scan["results"]}
 
 
-def test_instance_crud_and_scan_pickup():
-    c = _client()
+def test_instance_crud_and_scan_pickup(client):
+    c = client
     # ensure clean slate
     c.delete(f"/api/instances/{TEMP_ID}")
 
@@ -52,8 +43,8 @@ def test_instance_crud_and_scan_pickup():
     assert TEMP_ID not in {i["id"] for i in c.get("/api/instances").get_json()}
 
 
-def test_create_validation():
-    c = _client()
+def test_create_validation(client):
+    c = client
     assert c.post("/api/instances", json={"name": "x", "role": "db"}).status_code == 400  # no id
     assert c.post("/api/instances", json={
         "id": "i-novalidgroup", "name": "x", "role": "db",
