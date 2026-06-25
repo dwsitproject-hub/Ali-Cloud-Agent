@@ -31,7 +31,7 @@ def seed_data() -> dict:
             created_groups += 1
 
         for inst in grp["instances"]:
-            if Instance.query.get(inst["id"]) is None:
+            if db.session.get(Instance, inst["id"]) is None:
                 db.session.add(Instance(
                     id=inst["id"],
                     name=inst["name"],
@@ -42,7 +42,7 @@ def seed_data() -> dict:
                 ))
                 created_instances += 1
 
-    if User.query.get(DEV_USER_ID) is None:
+    if db.session.get(User, DEV_USER_ID) is None:
         db.session.add(User(id=DEV_USER_ID, email=config.DEV_LOGIN_EMAIL))
 
     db.session.commit()

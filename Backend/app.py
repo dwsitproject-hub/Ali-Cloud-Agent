@@ -101,7 +101,9 @@ def create_app() -> Flask:
     Migrate(app, db, directory=str(_BASE_DIR / "migrations"))
     seed.register_cli(app)
 
+    from instances_api import instances_bp
     app.register_blueprint(main_bp)
+    app.register_blueprint(instances_bp)
     return app
 
 

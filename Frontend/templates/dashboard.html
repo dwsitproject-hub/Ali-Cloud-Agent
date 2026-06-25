@@ -72,7 +72,8 @@
     <h1>Cloud Agent Monitoring</h1>
     <div class="sub">Agent 1 scans CloudMonitor + service health every {{ interval }} min &middot; Agent 2 sends DirectMail alerts</div>
   </div>
-  <div>
+  <div style="display:flex;align-items:center;gap:12px">
+    <a href="/instances" style="color:var(--accent);text-decoration:none;font-size:13px">Manage instances</a>
     {% if mock %}<span class="pill mock">MOCK MODE</span>
     {% else %}<span class="pill live">LIVE</span>{% endif %}
     <span class="pill">auto-alert: {{ 'on' if auto_alert else 'off' }}</span>
