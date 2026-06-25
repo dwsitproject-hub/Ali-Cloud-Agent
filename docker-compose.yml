@@ -17,15 +17,13 @@ services:
     depends_on:
       db:
         condition: service_healthy
+    # Real integration: load the actual .env (Alibaba creds, MOCK_MODE=false,
+    # SECRET_KEY, dev-login flag, etc.). Only DATABASE_URL is overridden because
+    # inside the compose network Postgres is reached at db:5432, not localhost.
+    env_file:
+      - .env
     environment:
-      # Test config: synthetic data, no Alibaba creds, dev login on.
-      MOCK_MODE: "true"
-      DEV_LOGIN_ENABLED: "true"
       DATABASE_URL: postgresql+psycopg2://cloudagent:cloudagent@db:5432/cloudagent
-      SECRET_KEY: dev-insecure-change-me
-      SESSION_COOKIE_SECURE: "false"
-      SESSION_COOKIE_SAMESITE: Lax
-      ALERT_RECIPIENTS: dev@localhost
     # Apply migrations + seed, then serve.
     command: >
       sh -c "python -m flask db upgrade &&
