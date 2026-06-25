@@ -22,6 +22,25 @@ def _utcnow() -> datetime:
     return datetime.now(timezone.utc)
 
 
+def enabled_instance_dicts() -> list:
+    """Enabled instances as plain dicts for config.build_metrics/checks.
+
+    Returns ``[{id, name, role, host, group}, ...]`` ordered by group then name.
+    Decouples the agents from the ORM (and keeps config.py ORM-free).
+    """
+    rows = (
+        Instance.query.join(InstanceGroup)
+        .filter(Instance.enabled.is_(True))
+        .order_by(InstanceGroup.sort_order, InstanceGroup.name, Instance.name)
+        .all()
+    )
+    return [
+        {"id": r.id, "name": r.name, "role": r.role,
+         "host": r.host or "", "group": r.group.name}
+        for r in rows
+    ]
+
+
 class User(db.Model):
     __tablename__ = "users"
     # Hub user_id (UUID string) is the stable primary key.

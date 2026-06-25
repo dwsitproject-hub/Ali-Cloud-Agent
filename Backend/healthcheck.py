@@ -95,8 +95,14 @@ def check_one(check: dict) -> dict:
 
 
 def run_health_checks() -> dict:
-    """Probe every configured service. Returns a structured document."""
-    results = [check_one(c) for c in config.SERVICE_CHECKS]
+    """Probe every configured service. Returns a structured document.
+
+    Service checks are derived from the DB-backed instance inventory at probe
+    time (by each instance's role)."""
+    from models import enabled_instance_dicts
+
+    checks = config.build_service_checks(enabled_instance_dicts())
+    results = [check_one(c) for c in checks]
     down = [r for r in results if r["up"] is False]
     return {
         "checked_at": datetime.now(timezone.utc).isoformat(),

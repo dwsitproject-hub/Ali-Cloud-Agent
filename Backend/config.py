@@ -1,15 +1,15 @@
 """Central configuration for Cloud Agent Monitoring.
 
-Reads settings from environment (.env) and exposes:
-  * METRICS  - CloudMonitor metrics Agent 1 scans (CPU/mem/disk per instance)
-  * SERVICE_CHECKS - per-instance service health checks (TCP/HTTP probes)
+Reads settings from environment (.env) and exposes the metric/service-check
+builders the agents use to expand the DB-backed instance inventory:
+  * build_metrics(instances)        - CloudMonitor metrics (CPU/mem/disk)
+  * build_service_checks(instances) - per-instance TCP/HTTP probes
 
-Edit INSTANCE_GROUPS below to add/rename instances, set their `host` (IP or DNS
-the monitor can reach) and `role` (drives the default service checks).
+INSTANCE_GROUPS below is now only seed data for `flask seed`; the live inventory
+lives in PostgreSQL and is edited via the register page.
 """
 from __future__ import annotations
 
-import json
 import os
 from pathlib import Path
 
@@ -160,61 +160,56 @@ SERVICE_CHECKS_BY_ROLE = {
 }
 
 
-def _build_metrics() -> list:
+# The monitored inventory now lives in PostgreSQL (see models.py / the register
+# page). The agents fetch enabled instances at scan time and expand them into
+# the flat metric/service-check lists via the builders below. Each `instance` is
+# a plain dict: {id, name, role, host, group}. INSTANCE_GROUPS above is retained
+# only as seed data for `flask seed`.
+
+def build_metrics(instances: list) -> list:
+    """Expand instance dicts into per-metric scan descriptors (one per template)."""
     metrics = []
-    for grp in INSTANCE_GROUPS:
-        for inst in grp["instances"]:
-            for tpl in METRIC_TEMPLATES:
-                metrics.append({
-                    "key": f"{inst['id']}_{tpl['suffix']}",
-                    "label": tpl["label"],
-                    "group": grp["group"],
-                    "instance_id": inst["id"],
-                    "instance_name": inst["name"],
-                    "namespace": tpl["namespace"],
-                    "metric_name": tpl["metric_name"],
-                    "period": tpl["period"],
-                    "dimensions": f'[{{"instanceId":"{inst["id"]}"}}]',
-                    "stat": tpl["stat"],
-                    "threshold": tpl["threshold"],
-                    "comparison": tpl["comparison"],
-                    "unit": tpl["unit"],
-                    "agent_required": tpl["agent_required"],
-                })
+    for inst in instances:
+        for tpl in METRIC_TEMPLATES:
+            metrics.append({
+                "key": f"{inst['id']}_{tpl['suffix']}",
+                "label": tpl["label"],
+                "group": inst.get("group", "Ungrouped"),
+                "instance_id": inst["id"],
+                "instance_name": inst["name"],
+                "namespace": tpl["namespace"],
+                "metric_name": tpl["metric_name"],
+                "period": tpl["period"],
+                "dimensions": f'[{{"instanceId":"{inst["id"]}"}}]',
+                "stat": tpl["stat"],
+                "threshold": tpl["threshold"],
+                "comparison": tpl["comparison"],
+                "unit": tpl["unit"],
+                "agent_required": tpl["agent_required"],
+            })
     return metrics
 
 
-def _build_service_checks() -> list:
+def build_service_checks(instances: list) -> list:
+    """Expand instance dicts into per-service health-probe descriptors by role."""
     checks = []
-    for grp in INSTANCE_GROUPS:
-        for inst in grp["instances"]:
-            host = (inst.get("host") or "").strip()
-            for svc in SERVICE_CHECKS_BY_ROLE.get(inst.get("role", ""), []):
-                checks.append({
-                    "key": f"{inst['id']}_{svc['name'].lower().replace(' ', '_')}",
-                    "group": grp["group"],
-                    "instance_id": inst["id"],
-                    "instance_name": inst["name"],
-                    "name": svc["name"],
-                    "type": svc["type"],
-                    "host": host,
-                    "port": svc.get("port"),
-                    "scheme": svc.get("scheme", "http"),
-                    "path": svc.get("path", "/"),
-                    "expect": svc.get("expect", [200]),
-                })
+    for inst in instances:
+        host = (inst.get("host") or "").strip()
+        for svc in SERVICE_CHECKS_BY_ROLE.get(inst.get("role", ""), []):
+            checks.append({
+                "key": f"{inst['id']}_{svc['name'].lower().replace(' ', '_')}",
+                "group": inst.get("group", "Ungrouped"),
+                "instance_id": inst["id"],
+                "instance_name": inst["name"],
+                "name": svc["name"],
+                "type": svc["type"],
+                "host": host,
+                "port": svc.get("port"),
+                "scheme": svc.get("scheme", "http"),
+                "path": svc.get("path", "/"),
+                "expect": svc.get("expect", [200]),
+            })
     return checks
-
-
-def load_metrics() -> list:
-    override = BASE_DIR / "metrics.json"
-    if override.exists():
-        return json.loads(override.read_text(encoding="utf-8"))
-    return _build_metrics()
-
-
-METRICS = load_metrics()
-SERVICE_CHECKS = _build_service_checks()
 
 
 def credentials_present() -> bool:

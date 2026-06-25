@@ -114,8 +114,15 @@ def scan_metric(metric: dict) -> dict:
 
 
 def run_scan() -> dict:
-    """Scan every configured metric. Returns a structured result document."""
-    results = [scan_metric(m) for m in config.METRICS]
+    """Scan every configured metric. Returns a structured result document.
+
+    The inventory is read from the DB at scan time, so instances added via the
+    register page are picked up on the next cycle.
+    """
+    from models import enabled_instance_dicts
+
+    metrics = config.build_metrics(enabled_instance_dicts())
+    results = [scan_metric(m) for m in metrics]
     breaches = [r for r in results if r["breached"]]
     return {
         "scanned_at": datetime.now(timezone.utc).isoformat(),
