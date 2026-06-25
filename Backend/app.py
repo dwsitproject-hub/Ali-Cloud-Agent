@@ -14,6 +14,7 @@ from __future__ import annotations
 
 import atexit
 import logging
+from pathlib import Path
 
 from flask import Flask, jsonify, render_template, request
 
@@ -25,7 +26,13 @@ from agents import agent2_alerter
 logging.basicConfig(level=logging.INFO,
                     format="%(asctime)s %(levelname)s %(name)s: %(message)s")
 
-app = Flask(__name__)
+# Templates + static assets live in the sibling Frontend/ folder (one level up
+# from Backend/), not under the Python package.
+_FRONTEND = Path(__file__).resolve().parent.parent / "Frontend"
+
+app = Flask(__name__,
+            template_folder=str(_FRONTEND / "templates"),
+            static_folder=str(_FRONTEND / "static"))
 
 
 @app.route("/")

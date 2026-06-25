@@ -15,9 +15,11 @@ from pathlib import Path
 
 from dotenv import load_dotenv
 
-load_dotenv()
-
 BASE_DIR = Path(__file__).resolve().parent
+
+# .env lives at the repo root (one level above Backend/). load_dotenv does not
+# override variables already set in the environment.
+load_dotenv(BASE_DIR.parent / ".env")
 
 
 def _b(name: str, default: bool) -> bool:

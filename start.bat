@@ -21,7 +21,7 @@ if errorlevel 1 (
 REM --- Install dependencies once (creates a marker so later runs are instant) ---
 if not exist ".deps_installed" (
   echo [setup] Installing dependencies ^(first run only^)...
-  python -m pip install -r requirements.txt
+  python -m pip install -r Backend\requirements.txt
   if errorlevel 1 ( echo [ERROR] Dependency install failed. & pause & exit /b 1 )
   echo done > ".deps_installed"
 )
@@ -40,7 +40,7 @@ echo.
 echo [run] Starting Cloud Agent Monitoring at http://127.0.0.1:5000
 echo [run] Leave this window open. Press Ctrl+C to stop the server.
 echo.
-python app.py
+python Backend\app.py
 
 echo.
 echo [stopped] Server has stopped.

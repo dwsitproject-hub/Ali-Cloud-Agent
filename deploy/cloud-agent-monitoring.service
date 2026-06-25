@@ -10,12 +10,13 @@ Type=simple
 User=cloudagent
 Group=cloudagent
 
-# Where the project lives on the ECS box. load_dotenv() reads ./.env from here.
+# Where the project lives on the ECS box. config.py reads ./.env from here
+# (the repo root, one level above Backend/).
 WorkingDirectory=/opt/cloud-agent-monitoring
 
-# Run the app in its virtualenv. app.py's __main__ bootstraps the first scan and
-# starts the 5-min APScheduler in-process (single process => single scheduler).
-ExecStart=/opt/cloud-agent-monitoring/.venv/bin/python app.py
+# Run the app in its virtualenv. Backend/app.py's __main__ bootstraps the first
+# scan and starts the APScheduler in-process (single process => single scheduler).
+ExecStart=/opt/cloud-agent-monitoring/.venv/bin/python Backend/app.py
 
 # Keep it alive across crashes / reboots.
 Restart=always
