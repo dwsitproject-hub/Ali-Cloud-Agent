@@ -1,0 +1,41 @@
+# Cloud Agent Monitoring — DATABASE SERVER (PostgreSQL only).
+#
+# Run this on the dedicated DB server in staging/production. It hosts the
+# monitor's own state (inventory, scan history, users).
+#
+#   cp deploy/env.db.example .env      # then set a strong POSTGRES_PASSWORD
+#   docker compose -f docker-compose.db.yml up -d
+#
+# SECURITY:
+#   * Set a strong POSTGRES_PASSWORD (the app authenticates with it remotely).
+#   * Restrict inbound 5432 to the BE server's private IP in the security group;
+#     do NOT expose it to the public internet. Bind to the private NIC via
+#     DB_BIND_IP if the host has a public interface.
+#   * Keep this database separate from any monitored production database so a
+#     monitored-DB incident can't corrupt the monitor's own state.
+services:
+  db:
+    image: postgres:16-alpine
+    container_name: cloud-agent-db
+    restart: unless-stopped
+    environment:
+      POSTGRES_USER: ${POSTGRES_USER:-cloudagent}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:?POSTGRES_PASSWORD must be set}
+      POSTGRES_DB: ${POSTGRES_DB:-cloudagent}
+    ports:
+      # host:container. Set DB_BIND_IP to the private IP to avoid binding the
+      # public interface; the security group is still the primary gate. On a
+      # shared box a Postgres is very likely already on 5432 — check first
+      # (sudo ss -tlnp | grep ':5432 ') and override DB_HOST_PORT (e.g. 5433) if
+      # so. Whatever you pick MUST match the :PORT in the BE's DATABASE_URL.
+      - "${DB_BIND_IP:-0.0.0.0}:${DB_HOST_PORT:-5432}:5432"
+    volumes:
+      - cloud_agent_pgdata:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U ${POSTGRES_USER:-cloudagent}"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+
+volumes:
+  cloud_agent_pgdata:

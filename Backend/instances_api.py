@@ -1,18 +1,19 @@
-"""Register / manage monitored instances.
+"""Manage monitored instances (JSON CRUD API).
 
-A page (GET /instances) plus a small JSON CRUD API. Instances written here land
-in PostgreSQL and are picked up by the next scan (the agents read the inventory
-per cycle - see config.build_metrics / models.enabled_instance_dicts).
+Instances written here land in PostgreSQL and are picked up by the next scan
+(the agents read the inventory per cycle - see config.build_metrics /
+models.enabled_instance_dicts). The management UI is the standalone frontend's
+instances.html, which consumes these endpoints.
 
-  GET    /instances              management page (form + list)
   GET    /api/instances          list all instances
+  GET    /api/instances/meta     roles + groups (for the frontend form)
   POST   /api/instances          create an instance
   PATCH  /api/instances/<id>     update fields / toggle enabled
   DELETE /api/instances/<id>     remove an instance
 """
 from __future__ import annotations
 
-from flask import Blueprint, jsonify, render_template, request
+from flask import Blueprint, jsonify, request
 
 import config
 from db import db
@@ -50,18 +51,14 @@ def _resolve_group(data: dict) -> InstanceGroup | None:
     return group
 
 
-@instances_bp.route("/instances")
-def manage_page():
-    groups = InstanceGroup.query.order_by(InstanceGroup.sort_order, InstanceGroup.name).all()
-    instances = (
-        Instance.query.join(InstanceGroup)
-        .order_by(InstanceGroup.sort_order, Instance.name).all()
-    )
-    return render_template(
-        "register_instance.html",
+@instances_bp.route("/api/instances/meta", methods=["GET"])
+def instances_meta():
+    """Roles + groups for the frontend's add-instance form."""
+    groups = InstanceGroup.query.order_by(
+        InstanceGroup.sort_order, InstanceGroup.name).all()
+    return jsonify(
         roles=_roles(),
         groups=[{"id": g.id, "name": g.name} for g in groups],
-        instances=[_instance_to_dict(i) for i in instances],
     )
 
 

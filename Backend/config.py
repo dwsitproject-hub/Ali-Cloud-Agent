@@ -26,6 +26,16 @@ def _b(name: str, default: bool) -> bool:
     return os.getenv(name, str(default)).strip().lower() in ("1", "true", "yes", "on")
 
 
+def _host(name: str) -> str:
+    """A monitored server's probe host (private IP/DNS) from the environment.
+
+    Lets the FE/BE/DB hosts for each environment be set declaratively in the
+    BE server's .env, so `flask seed` populates the inventory with real probe
+    targets. Blank (unset) keeps the old behaviour: service probes are skipped
+    for that box until a host is set (here or via the register page)."""
+    return os.getenv(name, "").strip()
+
+
 # --- Credentials / endpoints -------------------------------------------------
 ACCESS_KEY_ID = os.getenv("ALIBABA_ACCESS_KEY_ID", "").strip()
 ACCESS_KEY_SECRET = os.getenv("ALIBABA_ACCESS_KEY_SECRET", "").strip()
@@ -47,6 +57,24 @@ HEALTHCHECK_ENABLED = _b("HEALTHCHECK_ENABLED", True)
 HEALTHCHECK_TIMEOUT = float(os.getenv("HEALTHCHECK_TIMEOUT", "5"))
 FLASK_HOST = os.getenv("FLASK_HOST", "127.0.0.1")
 FLASK_PORT = int(os.getenv("FLASK_PORT", "5000"))
+# Max metric queries / service probes to run concurrently per scan cycle. The
+# work is network-bound, so parallelising keeps a cycle fast even with many
+# instances or slow/dead hosts (which otherwise each wait out the timeout).
+SCAN_CONCURRENCY = int(os.getenv("SCAN_CONCURRENCY", "8"))
+
+# --- Alerting cadence (flap / flood control) ---------------------------------
+# Auto-alerts fire on TRANSITIONS, not every cycle: a mail goes out when a NEW
+# problem appears, when everything RECOVERS, or as a periodic reminder every
+# ALERT_RENOTIFY_MINUTES while the same problem persists. This stops a stuck
+# metric from emailing every SCAN_INTERVAL_MINUTES.
+ALERT_RENOTIFY_MINUTES = int(os.getenv("ALERT_RENOTIFY_MINUTES", "60"))
+ALERT_ON_RECOVERY = _b("ALERT_ON_RECOVERY", True)
+
+# --- History retention -------------------------------------------------------
+# Scan history is written every cycle and would otherwise grow without bound.
+# Runs (and their child metric/service/alert rows) older than this are pruned
+# after each cycle. 0 disables pruning (keep everything).
+HISTORY_RETENTION_DAYS = int(os.getenv("HISTORY_RETENTION_DAYS", "30"))
 
 # --- Database (PostgreSQL) ---------------------------------------------------
 # Default points at the local docker-compose Postgres (see docker-compose.yml).
@@ -67,6 +95,17 @@ SESSION_COOKIE_SECURE = _b("SESSION_COOKIE_SECURE", not DEV_LOGIN_ENABLED)
 SESSION_COOKIE_SAMESITE = os.getenv(
     "SESSION_COOKIE_SAMESITE", "Lax" if DEV_LOGIN_ENABLED else "None").strip()
 
+# --- Standalone frontend (served separately; talks to this API cross-origin) --
+# Where the static frontend is served from. Login/SSO/logout redirect here, and
+# it is the default CORS origin. Default targets the local dev FE (nginx on 8080).
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:8080").strip().rstrip("/")
+# Browser origins allowed to call this API with credentials (comma-separated).
+# Defaults to FRONTEND_URL. Never use "*" with credentials.
+CORS_ORIGINS = [
+    o.strip().rstrip("/")
+    for o in os.getenv("CORS_ORIGINS", FRONTEND_URL).split(",") if o.strip()
+]
+
 
 # --- What to monitor ---------------------------------------------------------
 # Each instance: id, name, role (drives default service checks), and host (the
@@ -75,21 +114,25 @@ SESSION_COOKIE_SAMESITE = os.getenv(
 #
 # All instances live in CLOUDMONITOR_REGION (ap-southeast-5 / Jakarta).
 
+# Each environment (Production / Staging) is three servers — Frontend, Backend,
+# and DB — matching the real deployment topology. Set each server's probe host
+# (private IP/DNS) in the BE server's .env via MONITOR_HOST_<ENV>_<ROLE>; blank
+# leaves probes skipped for that box until a host is set.
 INSTANCE_GROUPS = [
     {
         "group": "Production",
         "instances": [
-            {"id": "i-k1a5irk321vnht0kec3j", "name": "DB Production", "role": "db", "host": ""},
-            {"id": "i-k1ad3kyn8xfme3vsx78c", "name": "Frontend Production", "role": "frontend", "host": ""},
-            {"id": "i-k1aenopo7x0qcfemnkye", "name": "Backend Production", "role": "backend", "host": ""},
+            {"id": "i-k1a5irk321vnht0kec3j", "name": "DB Production", "role": "db", "host": _host("MONITOR_HOST_PROD_DB")},
+            {"id": "i-k1ad3kyn8xfme3vsx78c", "name": "Frontend Production", "role": "frontend", "host": _host("MONITOR_HOST_PROD_FRONTEND")},
+            {"id": "i-k1aenopo7x0qcfemnkye", "name": "Backend Production", "role": "backend", "host": _host("MONITOR_HOST_PROD_BACKEND")},
         ],
     },
     {
         "group": "Staging",
         "instances": [
-            {"id": "i-k1ab5rh48e40enbqa7ii", "name": "DB Staging", "role": "db", "host": ""},
-            {"id": "i-k1a5ja5hi7ps6aa7x88r", "name": "Frontend Staging", "role": "frontend", "host": ""},
-            {"id": "i-k1a4m0oobaw170notm7p", "name": "Backend Staging", "role": "backend", "host": ""},
+            {"id": "i-k1ab5rh48e40enbqa7ii", "name": "DB Staging", "role": "db", "host": _host("MONITOR_HOST_STAGING_DB")},
+            {"id": "i-k1a5ja5hi7ps6aa7x88r", "name": "Frontend Staging", "role": "frontend", "host": _host("MONITOR_HOST_STAGING_FRONTEND")},
+            {"id": "i-k1a4m0oobaw170notm7p", "name": "Backend Staging", "role": "backend", "host": _host("MONITOR_HOST_STAGING_BACKEND")},
         ],
     },
     {
@@ -214,3 +257,59 @@ def build_service_checks(instances: list) -> list:
 
 def credentials_present() -> bool:
     return bool(ACCESS_KEY_ID and ACCESS_KEY_SECRET)
+
+
+_INSECURE_SECRET_KEY = "dev-insecure-change-me"
+
+
+def validate_startup() -> tuple[list, list]:
+    """Fail-fast configuration check. Returns ``(errors, warnings)``.
+
+    Production requirements are only enforced when MOCK_MODE is off, so local
+    dev/tests (which run in mock mode) are never blocked. ``errors`` are fatal
+    (the app refuses to boot); ``warnings`` are logged but non-fatal.
+
+    This closes the "silent fallback to mock" footgun: without these checks a
+    live deployment with a missing/typo'd AccessKey would quietly synthesise
+    fake metrics and send nothing, while appearing healthy.
+    """
+    errors: list = []
+    warnings: list = []
+
+    # SECRET_KEY must never be the shipped default, in any mode that isn't a
+    # throwaway mock run (a weak signing key is a full session-forgery bypass).
+    if not MOCK_MODE and (not SECRET_KEY or SECRET_KEY == _INSECURE_SECRET_KEY):
+        errors.append(
+            "SECRET_KEY must be set to a strong random value in production "
+            '(python -c "import secrets; print(secrets.token_urlsafe(48))")')
+
+    if MOCK_MODE:
+        return errors, warnings
+
+    if not credentials_present():
+        errors.append(
+            "ALIBABA_ACCESS_KEY_ID / ALIBABA_ACCESS_KEY_SECRET are required when "
+            "MOCK_MODE=false (otherwise the app cannot reach CloudMonitor/DirectMail)")
+    if not DM_ACCOUNT_NAME:
+        errors.append(
+            "DM_ACCOUNT_NAME (a verified DirectMail sender address) is required "
+            "when MOCK_MODE=false")
+    if not SSO_TOKEN_SECRET and not DEV_LOGIN_ENABLED:
+        errors.append(
+            "SSO_TOKEN_SECRET (shared with the Hub) is required when "
+            "DEV_LOGIN_ENABLED=false — no one could sign in otherwise")
+
+    if DEV_LOGIN_ENABLED:
+        warnings.append(
+            "DEV_LOGIN_ENABLED=true in a live (non-mock) deployment — the "
+            "no-password dev-login bypass is active; set it false in production")
+    if not SESSION_COOKIE_SECURE:
+        warnings.append(
+            "SESSION_COOKIE_SECURE=false in a live deployment — session cookies "
+            "will be transmitted over plain HTTP")
+    if not ALERT_RECIPIENTS:
+        warnings.append(
+            "ALERT_RECIPIENTS is empty — breach/outage alerts will be composed "
+            "but delivered to no one")
+
+    return errors, warnings

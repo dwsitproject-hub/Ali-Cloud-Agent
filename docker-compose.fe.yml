@@ -1,0 +1,24 @@
+# Cloud Agent Monitoring — FRONTEND SERVER (static site under nginx).
+#
+# Run this on the FE server. It serves the dashboard/instances/login pages and
+# calls the backend API cross-origin. Set API_BASE to the BE server's public URL
+# (what the browser can reach), e.g. https://monitor-api.yourdomain.com
+#
+#   API_BASE=https://monitor-api.yourdomain.com \
+#   docker compose -f docker-compose.fe.yml up -d --build
+#
+# The backend must allow this frontend's origin: set CORS_ORIGINS (and
+# FRONTEND_URL) on the BE server to this site's public URL. Front nginx with
+# HTTPS (required for the cross-site SSO session cookie: SameSite=None; Secure).
+services:
+  fe:
+    build: ./Frontend
+    image: cloud-agent-frontend:latest
+    container_name: cloud-agent-fe
+    restart: unless-stopped
+    environment:
+      API_BASE: ${API_BASE:?set API_BASE to the backend public URL}
+    ports:
+      # host:container. Shared box? Override FE_HOST_PORT to avoid a clash on 80
+      # (check first: sudo ss -tlnp | grep ':80 '). The TLS proxy/SLB forwards here.
+      - "${FE_HOST_PORT:-80}:80"

@@ -1,4 +1,6 @@
 .env
+# Staging runbook holds internal IPs + cross-team infra inventory — keep local only.
+Docs/DEPLOY-STAGING.md
 __pycache__/
 *.pyc
 .venv/

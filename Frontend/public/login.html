@@ -29,10 +29,24 @@
     <p>This dashboard is protected. Access it through the Downstream Hub, which
        signs you in automatically via SSO.</p>
 
-    {% if dev_login %}
+    <div id="devWrap" style="display:none">
       <div class="divider">Local development</div>
-      <a class="btn ghost" href="{{ url_for('auth.dev_login') }}">Continue with dev login</a>
-    {% endif %}
+      <a class="btn ghost" id="devBtn" href="#">Continue with dev login</a>
+    </div>
   </div>
+
+<script src="config.js"></script>
+<script>
+const API = (window.APP_CONFIG && window.APP_CONFIG.apiBase) || '';
+// Top-level navigation (not fetch) so the backend can set the session cookie
+// first-party, then redirect back to the frontend.
+document.getElementById('devBtn').href = API + '/auth/dev-login';
+
+// Show the dev-login button only when the backend has it enabled.
+fetch(API + '/auth/info', {credentials:'include'})
+  .then(r => r.ok ? r.json() : {dev_login_enabled:false})
+  .then(info => { if(info.dev_login_enabled){ document.getElementById('devWrap').style.display='block'; } })
+  .catch(()=>{});
+</script>
 </body>
 </html>

@@ -20,6 +20,7 @@ COPY Frontend/ Frontend/
 
 EXPOSE 5000
 
-# Default: serve via gunicorn. docker-compose overrides `command` to run
-# migrations + seed first (see docker-compose.yml).
-CMD ["gunicorn", "--workers", "1", "--chdir", "Backend", "--bind", "0.0.0.0:5000", "wsgi:app"]
+# Default: serve via gunicorn. One worker => a single APScheduler; --threads
+# gives the web side concurrency so a long scan can't block dashboard polling.
+# docker-compose overrides `command` to run migrations + seed first.
+CMD ["gunicorn", "--workers", "1", "--threads", "4", "--chdir", "Backend", "--bind", "0.0.0.0:5000", "wsgi:app"]

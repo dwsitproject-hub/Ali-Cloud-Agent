@@ -12,6 +12,7 @@ from __future__ import annotations
 
 import json
 import random
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 import config
@@ -122,7 +123,15 @@ def run_scan() -> dict:
     from models import enabled_instance_dicts
 
     metrics = config.build_metrics(enabled_instance_dicts())
-    results = [scan_metric(m) for m in metrics]
+    # Each scan_metric is an independent network call (or a cheap mock); run
+    # them concurrently so a full cycle isn't the sum of every request's
+    # latency. ThreadPoolExecutor.map preserves input order.
+    if metrics:
+        workers = min(config.SCAN_CONCURRENCY, len(metrics))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            results = list(pool.map(scan_metric, metrics))
+    else:
+        results = []
     breaches = [r for r in results if r["breached"]]
     return {
         "scanned_at": datetime.now(timezone.utc).isoformat(),

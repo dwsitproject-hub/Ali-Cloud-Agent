@@ -3,7 +3,6 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-{% if csrf_token is defined %}<meta name="csrf-token" content="{{ csrf_token() }}">{% endif %}
 <title>Cloud Agent Monitoring</title>
 <style>
   :root { --bg:#0f1419; --card:#1a2230; --line:#2a3546; --txt:#e6edf3; --mut:#8b98a8;
@@ -21,6 +20,7 @@
            font-size:14px; cursor:pointer; font-weight:600; }
   button.ghost { background:transparent; border:1px solid var(--line); color:var(--txt); }
   button:disabled { opacity:.5; cursor:not-allowed; }
+  a.navlink { color:var(--accent); text-decoration:none; font-size:13px; }
   .pill { font-size:12px; padding:4px 10px; border-radius:999px; border:1px solid var(--line); color:var(--mut); }
   .pill.live { color:var(--ok); border-color:var(--ok); }
   .pill.mock { color:var(--warn); border-color:var(--warn); }
@@ -71,13 +71,13 @@
 <header>
   <div>
     <h1>Cloud Agent Monitoring</h1>
-    <div class="sub">Agent 1 scans CloudMonitor + service health every {{ interval }} min &middot; Agent 2 sends DirectMail alerts</div>
+    <div class="sub">Agent 1 scans CloudMonitor + service health every <span id="intervalNote">-</span> min &middot; Agent 2 sends DirectMail alerts</div>
   </div>
   <div style="display:flex;align-items:center;gap:12px">
-    <a href="/instances" style="color:var(--accent);text-decoration:none;font-size:13px">Manage instances</a>
-    {% if mock %}<span class="pill mock">MOCK MODE</span>
-    {% else %}<span class="pill live">LIVE</span>{% endif %}
-    <span class="pill">auto-alert: {{ 'on' if auto_alert else 'off' }}</span>
+    <a class="navlink" href="instances.html">Manage instances</a>
+    <a class="navlink" href="#" id="logoutLink">Sign out</a>
+    <span class="pill" id="modePill">&hellip;</span>
+    <span class="pill" id="autoPill">auto-alert: -</span>
   </div>
 </header>
 
@@ -109,10 +109,18 @@
 
 <div id="toast"></div>
 
+<script src="config.js"></script>
 <script>
 const $ = s => document.querySelector(s);
-const csrf = document.querySelector('meta[name="csrf-token"]')?.content;
-function postHeaders(){ const h={}; if(csrf) h['X-CSRFToken']=csrf; return h; }
+const API = (window.APP_CONFIG && window.APP_CONFIG.apiBase) || '';
+let CSRF = null;
+
+// All API calls go to the backend origin and carry the session cookie.
+function api(path, opts){ opts = opts || {}; opts.credentials = 'include'; return fetch(API + path, opts); }
+async function loadCsrf(){
+  try{ const r = await api('/api/csrf'); if(r.ok){ CSRF = (await r.json()).csrf_token; } }catch(e){}
+}
+function postHeaders(){ const h={}; if(CSRF) h['X-CSRFToken']=CSRF; return h; }
 function toast(msg){ const t=$('#toast'); t.textContent=msg; t.classList.add('show');
   setTimeout(()=>t.classList.remove('show'), 3500); }
 
@@ -140,11 +148,9 @@ function renderCards(scan){
   const c = $('#cards');
   if(!scan){ c.innerHTML='<div class="muted">No scan yet.</div>'; return; }
 
-  // services grouped by instance
   const svcByInst = {};
   (scan.services||[]).forEach(s=>{ (svcByInst[s.instance_id]=svcByInst[s.instance_id]||[]).push(s); });
 
-  // metrics grouped by environment -> instance
   const groups = {};
   for(const r of scan.results){
     const g = groups[r.group] || (groups[r.group]={});
@@ -198,6 +204,15 @@ function renderCards(scan){
   sp.className = 'pill' + (sd>0 ? ' bad' : '');
 }
 
+function applyConfig(cfg){
+  if(!cfg) return;
+  $('#intervalNote').textContent = cfg.interval_minutes;
+  const modePill = $('#modePill');
+  if(cfg.mode==='mock'){ modePill.textContent='MOCK MODE'; modePill.className='pill mock'; }
+  else { modePill.textContent='LIVE'; modePill.className='pill live'; }
+  $('#autoPill').textContent = 'auto-alert: ' + (cfg.auto_alert_on_breach?'on':'off');
+}
+
 function renderAlert(a){
   if(!a){ $('#alertBox').textContent='No alert sent yet.'; $('#previewWrap').innerHTML=''; return; }
   const who = (a.recipients||[]).join(', ') || '-';
@@ -223,27 +238,31 @@ function renderHist(h){
     <td>${x.total}</td></tr>`).join('');
 }
 
-function authGuard(r){ if(r.status===401){ window.location='/auth/login'; return true; } return false; }
+function authGuard(r){ if(r.status===401){ window.location='login.html'; return true; } return false; }
 
 async function refresh(){
-  const r = await fetch('/api/status'); if(authGuard(r)) return;
+  const r = await api('/api/status'); if(authGuard(r)) return;
+  if(!CSRF) await loadCsrf();
   const s = await r.json();
+  applyConfig(s.config);
   renderCards(s.last_scan); renderAlert(s.last_alert); renderHist(s.history);
 }
 async function scan(){
   $('#scanBtn').disabled=true;
-  try{ const r=await fetch('/api/scan',{method:'POST',headers:postHeaders()}); if(authGuard(r)) return;
+  try{ const r=await api('/api/scan',{method:'POST',headers:postHeaders()}); if(authGuard(r)) return;
     const s=await r.json();
     renderCards(s); toast(`Scan done - ${s.breach_count} breach(es), ${s.services_down_count||0} svc down`); await refresh(); }
   finally{ $('#scanBtn').disabled=false; }
 }
 async function send(){
   $('#sendBtn').disabled=true;
-  try{ const r=await fetch('/api/send',{method:'POST',headers:postHeaders()}); if(authGuard(r)) return;
+  try{ const r=await api('/api/send',{method:'POST',headers:postHeaders()}); if(authGuard(r)) return;
     const a=await r.json();
     a.trigger='manual'; toast(a.sent?'Alert email sent':(a.reason||'Email not sent')); await refresh(); }
   finally{ $('#sendBtn').disabled=false; }
 }
+
+$('#logoutLink').addEventListener('click', e=>{ e.preventDefault(); window.location = API + '/auth/logout'; });
 
 refresh();
 setInterval(refresh, 15000);

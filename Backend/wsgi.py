@@ -4,9 +4,10 @@ Use this if you run under a WSGI server (e.g. gunicorn) instead of `python app.p
 It runs the one-time bootstrap (first scan + start the scheduler) and exposes `app`.
 
 IMPORTANT: run with a SINGLE worker, otherwise the scheduler is duplicated and
-scans/alerts fire multiple times, e.g.:
+scans/alerts fire multiple times. Use --threads for web concurrency instead
+(one process => one APScheduler), e.g.:
 
-    gunicorn --workers 1 --chdir Backend --bind 127.0.0.1:5000 wsgi:app
+    gunicorn --workers 1 --threads 4 --chdir Backend --bind 127.0.0.1:5000 wsgi:app
 """
 import os
 import sys

@@ -1,0 +1,43 @@
+# Cloud Agent Monitoring — BACKEND SERVER (app only).
+#
+# Run this on the BE server in staging/production. PostgreSQL lives on the
+# separate DB server, so DATABASE_URL in .env must point at it, e.g.
+#   DATABASE_URL=postgresql+psycopg2://cloudagent:PASS@<db-server-private-ip>:5432/cloudagent
+#
+#   cp deploy/env.app.example .env     # then fill creds, secrets, DATABASE_URL
+#   docker compose -f docker-compose.app.yml up -d --build
+#
+# There is deliberately NO db service and NO DATABASE_URL override here: the app
+# connects to the remote DB server using the value from .env as-is. It applies
+# migrations + seed on start, then serves under gunicorn.
+#
+# This is the BACKEND API only — the UI is the separate frontend on the FE
+# server (docker-compose.fe.yml). Set FRONTEND_URL and CORS_ORIGINS in .env to
+# the frontend's public URL so login redirects and CORS work.
+#
+# ONE app instance only: the in-process APScheduler must be a single process
+# (--workers 1). --threads gives the web side concurrency. The app also runs the
+# health probes, so the BE server must be able to reach every monitored server's
+# ports (private IPs + security-group rules).
+services:
+  app:
+    build: .
+    image: cloud-agent-monitoring:latest
+    container_name: cloud-agent-app
+    restart: unless-stopped
+    env_file:
+      - .env
+    command: >
+      sh -c "python -m flask db upgrade &&
+             python -m flask seed &&
+             gunicorn --workers 1 --threads 4 --chdir Backend --bind 0.0.0.0:5000 wsgi:app"
+    ports:
+      # host:container. Shared box? Override APP_HOST_PORT to avoid a clash on 5000
+      # (check first: sudo ss -tlnp | grep ':5000 '). The TLS proxy/SLB forwards here.
+      - "${APP_HOST_PORT:-5000}:5000"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:5000/api/ready', timeout=5).status==200 else 1)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s

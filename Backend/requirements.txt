@@ -16,6 +16,9 @@ Flask-Login==0.6.3
 PyJWT==2.9.0
 Flask-WTF==1.2.1
 
+# CORS: the standalone frontend calls this API cross-origin with credentials
+Flask-Cors==4.0.1
+
 # Production WSGI server
 gunicorn==23.0.0
 

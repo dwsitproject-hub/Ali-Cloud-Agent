@@ -5,11 +5,15 @@ Docs/SSO-TARGET-APP-INTEGRATION.md). We verify it with the shared secret,
 upsert the user, and establish a Flask-Login session.
 
 Routes
-  GET  /auth/login       login landing page
+  GET  /auth/login       redirect to the frontend login page
+  GET  /auth/info        public: whether dev-login is enabled (for the SPA)
   POST /auth/hub         Hub SSO entry (CSRF-exempt; verified by JWT signature)
   GET  /auth/dev-login   local dev bypass (gated by DEV_LOGIN_ENABLED)
   POST /auth/dev-login
   GET  /auth/logout
+
+On success the user is redirected to config.FRONTEND_URL (the standalone
+frontend), which then calls this API with the established session cookie.
 """
 from __future__ import annotations
 
@@ -18,8 +22,7 @@ import uuid
 from datetime import datetime, timezone
 
 import jwt
-from flask import (Blueprint, abort, current_app, redirect, render_template,
-                   request, url_for)
+from flask import Blueprint, abort, jsonify, redirect, request
 from flask_login import login_user, logout_user
 
 import config
@@ -51,7 +54,14 @@ def _login_existing_or_new(user_id: str, email: str) -> None:
 
 @auth_bp.route("/login")
 def login():
-    return render_template("login.html", dev_login=config.DEV_LOGIN_ENABLED)
+    # The login UI lives on the frontend; send unauthenticated visitors there.
+    return redirect(config.FRONTEND_URL + "/login.html")
+
+
+@auth_bp.route("/info")
+def info():
+    """Public: lets the frontend login page decide whether to show dev-login."""
+    return jsonify(dev_login_enabled=config.DEV_LOGIN_ENABLED)
 
 
 @auth_bp.route("/hub", methods=["POST"])
@@ -89,8 +99,9 @@ def hub():
 
     _login_existing_or_new(str(user_id), email)
     log.info("SSO login: %s", email)
-    # 303 so the browser issues a top-level GET (carries the new session cookie).
-    return redirect(url_for("main.dashboard"), code=303)
+    # 303 so the browser issues a top-level GET to the frontend (carrying the
+    # new session cookie), which then calls this API.
+    return redirect(config.FRONTEND_URL, code=303)
 
 
 @auth_bp.route("/dev-login", methods=["GET", "POST"])
@@ -99,10 +110,10 @@ def dev_login():
         abort(404)
     _login_existing_or_new(seed.DEV_USER_ID, config.DEV_LOGIN_EMAIL)
     log.info("dev login: %s", config.DEV_LOGIN_EMAIL)
-    return redirect(url_for("main.dashboard"), code=303)
+    return redirect(config.FRONTEND_URL, code=303)
 
 
 @auth_bp.route("/logout")
 def logout():
     logout_user()
-    return redirect(url_for("auth.login"))
+    return redirect(config.FRONTEND_URL + "/login.html")

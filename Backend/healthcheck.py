@@ -17,6 +17,7 @@ import socket
 import ssl
 import time
 import urllib.request
+from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
 import config
@@ -102,7 +103,15 @@ def run_health_checks() -> dict:
     from models import enabled_instance_dicts
 
     checks = config.build_service_checks(enabled_instance_dicts())
-    results = [check_one(c) for c in checks]
+    # Probes are independent and network-bound; run them concurrently so a few
+    # dead hosts (each waiting out HEALTHCHECK_TIMEOUT) don't serialise into a
+    # multi-minute cycle. ThreadPoolExecutor.map preserves input order.
+    if checks:
+        workers = min(config.SCAN_CONCURRENCY, len(checks))
+        with ThreadPoolExecutor(max_workers=workers) as pool:
+            results = list(pool.map(check_one, checks))
+    else:
+        results = []
     down = [r for r in results if r["up"] is False]
     return {
         "checked_at": datetime.now(timezone.utc).isoformat(),

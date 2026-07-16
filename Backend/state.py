@@ -11,6 +11,8 @@ the scheduler's background job pushes one - see scheduler._scan_job).
 """
 from __future__ import annotations
 
+from datetime import datetime, timedelta, timezone
+
 from db import db
 from models import Alert, MetricResult, ScanRun, ServiceResult
 
@@ -120,6 +122,52 @@ def _alert_to_dict(a: Alert) -> dict:
         "sent": a.sent, "mode": a.mode, "trigger": a.trigger,
         "reason": a.reason, "sent_at": a.sent_at, "preview_html": a.preview_html,
     }
+
+
+# --- alerting support -------------------------------------------------------
+def previous_problem_keys() -> set:
+    """Problem keys from the scan run immediately BEFORE the latest one.
+
+    "Problem keys" = breached metric keys + down service keys. The current
+    cycle's run is already persisted by the time the scheduler asks, so the
+    previous run is the second-most-recent. Empty set if there is no prior run.
+    """
+    runs = ScanRun.query.order_by(ScanRun.id.desc()).limit(2).all()
+    if len(runs) < 2:
+        return set()
+    prev = runs[1]
+    keys = {m.key for m in prev.metric_results if m.breached and m.key}
+    keys |= {s.key for s in prev.service_results if s.up is False and s.key}
+    return keys
+
+
+def last_auto_alert_at() -> datetime | None:
+    """Timestamp of the most recent AUTO alert (drives the re-notify clock).
+
+    Manual sends don't reset the reminder cadence, so only ``trigger='auto'``
+    rows count.
+    """
+    a = (Alert.query.filter(Alert.trigger == "auto")
+         .order_by(Alert.id.desc()).first())
+    return a.created_at if a else None
+
+
+def prune_history(retention_days: int) -> int:
+    """Delete scan runs (and cascaded child rows) older than the retention
+    window. Returns the number of runs removed. No-op when retention_days<=0.
+    """
+    if retention_days <= 0:
+        return 0
+    cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+    # Delete via the ORM (not a bulk query) so the relationship cascade removes
+    # child metric/service/alert rows — the FKs have no ON DELETE CASCADE. Only
+    # a handful of runs age past the boundary each cycle, so this stays cheap.
+    old = ScanRun.query.filter(ScanRun.created_at < cutoff).all()
+    for run in old:
+        db.session.delete(run)
+    if old:
+        db.session.commit()
+    return len(old)
 
 
 def snapshot() -> dict:

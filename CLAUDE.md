@@ -10,18 +10,29 @@ dashboard shows everything grouped by environment. Access is gated by SSO
 
 ## Layout
 - `Backend/` - all Python. Flat modules (run with `Backend/` on `sys.path`).
-- `Frontend/templates/` - Jinja UI (`dashboard.html`, `register_instance.html`,
-  `login.html`); `Frontend/static/` for assets. Flask points here via
-  `template_folder`/`static_folder`.
+- `Frontend/` - **standalone static frontend** (plain HTML/JS under nginx, NOT
+  served by Flask). `public/` has `index.html` (dashboard), `instances.html`,
+  `login.html`, `config.js.template` (runtime `API_BASE`); plus `nginx.conf`,
+  `Dockerfile`, `40-config-js.sh`. It calls the backend API cross-origin with
+  `credentials:'include'`; the backend is API-only.
 - `Docs/` - docs (incl. `SSO-TARGET-APP-INTEGRATION.md`). `Assets/` - images.
-- `deploy/` - systemd unit. `docker-compose.yml` (repo root) - local Postgres.
+- `deploy/` - systemd unit + per-server env templates (`env.app.example`,
+  `env.db.example`, `env.fe.example`). Compose (repo root): `docker-compose.yml`
+  = single-box (fe+app+db); `docker-compose.db.yml` = Postgres on the DB server;
+  `docker-compose.app.yml` = backend API on the BE server (remote DB);
+  `docker-compose.fe.yml` = static frontend on the FE server. The prod/staging
+  topology is 3 servers (FE/BE/DB): frontend→FE, backend API→BE, Postgres→DB.
+  FE/BE/DB are *also* what it monitors. See README "Production topology".
 - `.env` lives at the **repo root**; `Backend/config.py` loads it via
   `load_dotenv(BASE_DIR.parent / ".env")`.
 
 ## Architecture (two "agents" + scheduler + DB + auth + UI)
-- `Backend/app.py` - `create_app()` factory: registers blueprints (`main`,
-  `instances`, `auth`), inits SQLAlchemy + Flask-Migrate, Flask-Login, CSRF, and
-  a `before_request` login guard. `_bootstrap(app)` starts the scheduler.
+- `Backend/app.py` - `create_app()` factory: **API-only** (no templates/pages).
+  Registers blueprints (`main`, `instances`, `auth`), inits SQLAlchemy +
+  Flask-Migrate, Flask-Login, CSRF, **Flask-CORS** (credentialed, pinned to
+  `CORS_ORIGINS`), a `before_request` login guard (lets `OPTIONS` preflights
+  through), and `validate_startup()` fail-fast. `_bootstrap(app)` starts the
+  scheduler.
 - `Backend/agents/agent1_scanner.py` - Agent 1: CloudMonitor `DescribeMetricLast`;
   reads the enabled instance inventory from the DB at scan time. Mock mode synthesises.
 - `Backend/healthcheck.py` - service probes (`tcp`/`http`); also builds checks
@@ -36,29 +47,33 @@ dashboard shows everything grouped by environment. Access is gated by SSO
   `enabled_instance_dicts()`).
 - `Backend/state.py` - **DB-backed** persistence: `set_last_scan`/`set_last_alert`
   write rows; `snapshot()` reconstructs the legacy dict shapes for `/api/status`.
-- `Backend/instances_api.py` - register/manage-instances page + CRUD API.
-- `Backend/auth/sso.py` - `/auth/hub` (Hub JWT), `/auth/dev-login`, `/auth/login`,
-  `/auth/logout`.
+- `Backend/instances_api.py` - instance CRUD API + `/api/instances/meta` (roles+groups).
+- `Backend/auth/sso.py` - `/auth/hub` (Hub JWT), `/auth/dev-login`, `/auth/info`
+  (public), `/auth/login` + `/auth/logout` (redirect to `FRONTEND_URL`).
 - `Backend/config.py` - env settings + `METRIC_TEMPLATES`, `SERVICE_CHECKS_BY_ROLE`,
   `INSTANCE_GROUPS` (seed only), `build_metrics()`/`build_service_checks()`.
 - `Backend/seed.py` - `flask seed` (idempotent: groups/instances/dev-user).
 - `Backend/wsgi.py` - gunicorn entry (`--workers 1`; inserts Backend/ on path).
 
 ## HTTP API
-GET `/` dashboard | GET `/api/status` | POST `/api/scan` (`?auto_alert=true`) |
-POST `/api/send` | GET `/api/health` (public) | GET `/instances` (page) |
-GET/POST `/api/instances`, PATCH/DELETE `/api/instances/<id>` |
-`/auth/login`, POST `/auth/hub`, `/auth/dev-login`, `/auth/logout`.
-All routes require login except `/api/health` and `/auth/*`. `/api/*` returns
-401 JSON when anonymous; pages redirect to `/auth/login`.
+**API-only backend** (UI is the separate static frontend). GET `/api/status` |
+POST `/api/scan` (`?auto_alert=true`) | POST `/api/send` | GET `/api/csrf` |
+GET `/api/health` (liveness, public) | GET `/api/ready` (readiness: DB + scan
+freshness, public) | GET/POST `/api/instances`, GET `/api/instances/meta`,
+PATCH/DELETE `/api/instances/<id>` | POST `/auth/hub`, GET `/auth/info` (public),
+`/auth/dev-login`, `/auth/login` (→ FE login), `/auth/logout`.
+All routes require login except `/api/health`, `/api/ready`, and `/auth/*`.
+`/api/*` returns 401 JSON when anonymous. Login/SSO redirect to `FRONTEND_URL`.
 
 ## Run / dev
-1. `docker compose up -d db` (Postgres on host port **5440**).
-2. From repo root with `Backend/` importable
-   (`$env:PYTHONPATH="Backend"; $env:FLASK_APP="app"`):
-   `python -m flask db upgrade` then `python -m flask seed`.
-3. Windows: double-click `start.bat`. Or `python Backend/app.py`
-   (http://127.0.0.1:5000).
+- Easiest: `docker compose up --build` = fe (**:8080**) + app API (**:5000**) +
+  db (**:5440**). Open **http://localhost:8080**.
+- Backend on host instead: `docker compose up -d db`, then with `Backend/`
+  importable (`$env:PYTHONPATH="Backend"; $env:FLASK_APP="app"`):
+  `python -m flask db upgrade` then `python -m flask seed`, then
+  `python Backend/app.py` (API on :5000); `docker compose up -d --build fe` for UI.
+- Frontend→backend is cross-origin: backend needs `CORS_ORIGINS`/`FRONTEND_URL`
+  set to the FE origin; the FE's `API_BASE` (config.js) points at the backend.
 - `MOCK_MODE=true` -> synthetic metrics, no Alibaba calls, no email. Also flips
   `DEV_LOGIN_ENABLED` on by default, so `/auth/dev-login` works without the Hub.
 - Live needs `.env` with `ALIBABA_ACCESS_KEY_ID/SECRET`, regions, DirectMail
@@ -68,8 +83,8 @@ All routes require login except `/api/health` and `/auth/*`. `/api/*` returns
 
 ## Inventory model (now in PostgreSQL)
 - Instances/groups live in the DB; edit them via the **register page**
-  (`/instances`) or the CRUD API. The agents read enabled instances each scan,
-  so changes apply on the next cycle.
+  (frontend `instances.html`) or the CRUD API. The agents read enabled instances
+  each scan, so changes apply on the next cycle.
 - `config.INSTANCE_GROUPS` is **seed data only** (`flask seed`), not the live source.
 - `METRIC_TEMPLATES` (CPU no-agent; Memory/Disk need the CloudMonitor agent) and
   `SERVICE_CHECKS_BY_ROLE` (default TCP/HTTP checks per role) remain code; the

@@ -3,7 +3,6 @@
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-{% if csrf_token is defined %}<meta name="csrf-token" content="{{ csrf_token() }}">{% endif %}
 <title>Register Instance · Cloud Agent Monitoring</title>
 <style>
   :root { --bg:#0f1419; --card:#1a2230; --line:#2a3546; --txt:#e6edf3; --mut:#8b98a8;
@@ -50,7 +49,7 @@
     <h1>Register Instance</h1>
     <div class="sub">Add an ECS instance to monitor &middot; picked up on the next scan</div>
   </div>
-  <div><a href="/">&larr; Back to dashboard</a></div>
+  <div><a href="index.html">&larr; Back to dashboard</a></div>
 </header>
 
 <div class="wrap">
@@ -67,9 +66,7 @@
       </div>
       <div>
         <label for="f-role">Role</label>
-        <select id="f-role" name="role" required>
-          {% for r in roles %}<option value="{{ r }}">{{ r }}</option>{% endfor %}
-        </select>
+        <select id="f-role" name="role" required></select>
         <div class="hint">Role selects the default TCP/HTTP service checks.</div>
       </div>
       <div>
@@ -78,10 +75,7 @@
       </div>
       <div>
         <label for="f-group">Group</label>
-        <select id="f-group" name="group_id">
-          {% for g in groups %}<option value="{{ g.id }}">{{ g.name }}</option>{% endfor %}
-          <option value="__new__">+ New group…</option>
-        </select>
+        <select id="f-group" name="group_id"></select>
       </div>
       <div id="newGroupWrap" style="display:none">
         <label for="f-newgroup">New group name</label>
@@ -103,21 +97,37 @@
   </div>
 </div>
 
+<script src="config.js"></script>
 <script>
 const $ = s => document.querySelector(s);
-const csrf = document.querySelector('meta[name="csrf-token"]')?.content;
+const API = (window.APP_CONFIG && window.APP_CONFIG.apiBase) || '';
+let CSRF = null;
 
+function api(path, opts){ opts = opts || {}; opts.credentials = 'include'; return fetch(API + path, opts); }
+async function loadCsrf(){
+  try{ const r = await api('/api/csrf'); if(r.ok){ CSRF = (await r.json()).csrf_token; } }catch(e){}
+}
 function headers(){
   const h = {'Content-Type':'application/json'};
-  if(csrf) h['X-CSRFToken'] = csrf;   // present once CSRF is enabled (Phase 7)
+  if(CSRF) h['X-CSRFToken'] = CSRF;
   return h;
 }
 function esc(s){ return (s==null?'':String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
 function msg(text, ok){ const m=$('#msg'); m.textContent=text; m.className=ok?'ok':'err';
   if(text) setTimeout(()=>{ if(m.textContent===text){ m.textContent=''; } }, 4000); }
+function authGuard(r){ if(r.status===401){ window.location='login.html'; return true; } return false; }
+
+async function loadMeta(){
+  const r = await api('/api/instances/meta'); if(authGuard(r)) return;
+  const meta = await r.json();
+  $('#f-role').innerHTML = meta.roles.map(x=>`<option value="${esc(x)}">${esc(x)}</option>`).join('');
+  $('#f-group').innerHTML =
+    meta.groups.map(g=>`<option value="${g.id}">${esc(g.name)}</option>`).join('')
+    + '<option value="__new__">+ New group…</option>';
+}
 
 async function load(){
-  const r = await fetch('/api/instances');
+  const r = await api('/api/instances'); if(authGuard(r)) return;
   const list = await r.json();
   $('#count').textContent = list.length;
   const b = $('#rows');
@@ -151,25 +161,28 @@ $('#addForm').addEventListener('submit', async e=>{
   if($('#f-group').value==='__new__') body.group_name = $('#f-newgroup').value.trim();
   else body.group_id = $('#f-group').value;
   try{
-    const r = await fetch('/api/instances', {method:'POST', headers:headers(), body:JSON.stringify(body)});
+    const r = await api('/api/instances', {method:'POST', headers:headers(), body:JSON.stringify(body)});
+    if(authGuard(r)) return;
     const data = await r.json();
-    if(r.ok){ msg('Added '+data.name, true); $('#addForm').reset(); $('#newGroupWrap').style.display='none'; await load(); }
+    if(r.ok){ msg('Added '+data.name, true); $('#addForm').reset(); $('#newGroupWrap').style.display='none'; await loadMeta(); await load(); }
     else msg(data.error || 'Failed to add', false);
   }catch(err){ msg('Network error', false); }
   finally{ $('#addBtn').disabled=false; }
 });
 
 async function toggle(id, enabled){
-  await fetch('/api/instances/'+encodeURIComponent(id), {method:'PATCH', headers:headers(), body:JSON.stringify({enabled})});
+  const r = await api('/api/instances/'+encodeURIComponent(id), {method:'PATCH', headers:headers(), body:JSON.stringify({enabled})});
+  if(authGuard(r)) return;
   await load();
 }
 async function remove(id, name){
   if(!confirm('Delete '+name+' ('+id+')? This removes it from monitoring.')) return;
-  await fetch('/api/instances/'+encodeURIComponent(id), {method:'DELETE', headers:headers()});
+  const r = await api('/api/instances/'+encodeURIComponent(id), {method:'DELETE', headers:headers()});
+  if(authGuard(r)) return;
   await load();
 }
 
-load();
+(async ()=>{ await loadCsrf(); await loadMeta(); await load(); })();
 </script>
 </body>
 </html>

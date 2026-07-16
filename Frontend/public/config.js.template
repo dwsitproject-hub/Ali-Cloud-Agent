@@ -1,0 +1,3 @@
+// Rendered at container start from API_BASE (see 40-config-js.sh). Points the
+// static frontend at the backend API origin.
+window.APP_CONFIG = { apiBase: "${API_BASE}" };

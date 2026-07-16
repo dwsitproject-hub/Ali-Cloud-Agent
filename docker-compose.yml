@@ -1,7 +1,16 @@
-# Full local stack for Cloud Agent Monitoring (app + PostgreSQL).
+# SINGLE-BOX stack for Cloud Agent Monitoring: frontend + backend API + Postgres.
+# Use this for local dev / all-in-one demo. For the 3-server (FE/BE/DB) staging
+# and production topology, use the split files instead:
+#   docker-compose.db.yml   -> PostgreSQL on the DB server
+#   docker-compose.app.yml  -> the backend API on the BE server (remote DB)
+#   docker-compose.fe.yml   -> the static frontend on the FE server
+# See the "Production topology" section of README.md.
 #
-#   docker compose up --build        # build + run app and db together
-#   # then open http://localhost:5000  (click "Continue with dev login")
+#   docker compose up --build        # build + run fe, app and db together
+#   # then open http://localhost:8080  (the frontend; "Continue with dev login")
+#
+# Services: fe (nginx, :8080) -> app (backend API, :5000) -> db (Postgres).
+# The browser loads the UI from :8080 and calls the API at :5000 (CORS-allowed).
 #
 # Or run only Postgres and the app on the host:
 #   docker compose up -d db          # Postgres only, exposed on localhost:5440
@@ -24,17 +33,41 @@ services:
       - .env
     environment:
       DATABASE_URL: postgresql+psycopg2://cloudagent:cloudagent@db:5432/cloudagent
-    # Apply migrations + seed, then serve.
+      # The static frontend runs at :8080; the browser calls this API from there.
+      FRONTEND_URL: http://localhost:8080
+      CORS_ORIGINS: http://localhost:8080
+    # Apply migrations + seed, then serve. One worker keeps a single APScheduler;
+    # threads give the web side concurrency so a long scan can't block the UI.
     command: >
       sh -c "python -m flask db upgrade &&
              python -m flask seed &&
-             gunicorn --workers 1 --chdir Backend --bind 0.0.0.0:5000 wsgi:app"
+             gunicorn --workers 1 --threads 4 --chdir Backend --bind 0.0.0.0:5000 wsgi:app"
     ports:
       - "5000:5000"
+    restart: unless-stopped
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:5000/api/ready', timeout=5).status==200 else 1)\""]
+      interval: 30s
+      timeout: 10s
+      retries: 5
+      start_period: 20s
+
+  fe:
+    build: ./Frontend
+    container_name: cloud-agent-fe
+    restart: unless-stopped
+    depends_on:
+      - app
+    # Where the browser reaches the backend API (host-published port 5000).
+    environment:
+      API_BASE: http://localhost:5000
+    ports:
+      - "8080:80"
 
   db:
     image: postgres:16-alpine
     container_name: cloud-agent-db
+    restart: unless-stopped
     environment:
       POSTGRES_USER: cloudagent
       POSTGRES_PASSWORD: cloudagent

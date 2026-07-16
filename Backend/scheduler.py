@@ -8,9 +8,11 @@ metric threshold is breached OR a service is down.
 from __future__ import annotations
 
 import logging
+from datetime import datetime, timezone
 
 from apscheduler.schedulers.background import BackgroundScheduler
 
+import alerting
 import config
 import healthcheck
 import state
@@ -49,15 +51,50 @@ def run_scan_job(auto_alert=None) -> dict:
              scan["mode"], scan["breach_count"], scan["total"],
              scan["services_down_count"], scan["services_total"])
 
-    problems = scan["breach_count"] + scan["services_down_count"]
-    if auto_alert and problems > 0:
-        log.warning("problem detected (%s metric breach, %s service down) -> Agent 2",
-                    scan["breach_count"], scan["services_down_count"])
-        alert = agent2_alerter.send_alert(scan)
-        alert["trigger"] = "auto"
-        state.set_last_alert(alert)
+    if auto_alert:
+        _maybe_auto_alert(scan)
+
+    # Keep history bounded (runs every cycle; only rows past the retention
+    # window are removed, so it is a cheap indexed delete most cycles).
+    try:
+        pruned = state.prune_history(config.HISTORY_RETENTION_DAYS)
+        if pruned:
+            log.info("pruned %s scan run(s) older than %s days",
+                     pruned, config.HISTORY_RETENTION_DAYS)
+    except Exception:  # pruning must never break a scan cycle
+        log.exception("history pruning failed")
 
     return scan
+
+
+def _maybe_auto_alert(scan: dict) -> None:
+    """Decide whether this cycle warrants an email, and send if so.
+
+    Transition-based (see alerting.decide): a new problem, a full recovery, or a
+    periodic reminder — never one email per cycle for a stuck metric.
+    """
+    current_keys = {r["key"] for r in scan.get("results", [])
+                    if r.get("breached") and r.get("key")}
+    current_keys |= {s["key"] for s in scan.get("services_down", [])
+                     if s.get("key")}
+
+    reason = alerting.decide(
+        current_keys,
+        state.previous_problem_keys(),
+        state.last_auto_alert_at(),
+        datetime.now(timezone.utc),
+        config.ALERT_RENOTIFY_MINUTES,
+        config.ALERT_ON_RECOVERY,
+    )
+    if not reason:
+        return
+
+    log.warning("auto-alert (%s): %s metric breach, %s service down",
+                reason, scan["breach_count"], scan["services_down_count"])
+    alert = agent2_alerter.send_alert(scan)
+    alert["trigger"] = "auto"
+    alert["reason"] = reason if not alert.get("reason") else f"{reason}: {alert['reason']}"
+    state.set_last_alert(alert)
 
 
 def _scan_job() -> None:
