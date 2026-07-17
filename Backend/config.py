@@ -111,7 +111,9 @@ SESSION_COOKIE_SAMESITE = os.getenv(
 # --- Standalone frontend (served separately; talks to this API cross-origin) --
 # Where the static frontend is served from. Login/SSO/logout redirect here, and
 # it is the default CORS origin. Default targets the local dev FE (nginx on 8080).
-FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:8080").strip().rstrip("/")
+# A single origin (used for post-login redirects). Defensive: if someone
+# comma-joins values (that's CORS_ORIGINS' job, not this), take the first.
+FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:8080").split(",")[0].strip().rstrip("/")
 # Browser origins allowed to call this API with credentials (comma-separated).
 # Defaults to FRONTEND_URL. Never use "*" with credentials.
 CORS_ORIGINS = [
