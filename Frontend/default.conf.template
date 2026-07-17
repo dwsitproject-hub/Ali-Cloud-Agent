@@ -1,0 +1,32 @@
+# Rendered at container start (envsubst of ${BACKEND_ORIGIN}; see 40-config-js.sh).
+# The frontend is a single origin: it serves the static UI AND reverse-proxies the
+# API/auth to the backend, so the browser only ever talks to this one origin
+# (no cross-origin cookies needed).
+server {
+    listen 80;
+    server_name _;
+    root /usr/share/nginx/html;
+    index index.html;
+
+    # Never cache the runtime config (API base can change per deploy).
+    location = /config.js { add_header Cache-Control "no-store"; }
+
+    # Backend API + auth -> the backend service (single-origin proxy).
+    location /api/ {
+        proxy_pass ${BACKEND_ORIGIN};
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+    location /auth/ {
+        proxy_pass ${BACKEND_ORIGIN};
+        proxy_set_header Host $host;
+        proxy_set_header X-Forwarded-For $remote_addr;
+        proxy_set_header X-Forwarded-Proto $scheme;
+    }
+
+    # Everything else -> the static frontend files.
+    location / {
+        try_files $uri $uri/ =404;
+    }
+}

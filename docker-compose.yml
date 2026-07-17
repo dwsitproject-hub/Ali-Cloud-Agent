@@ -58,9 +58,11 @@ services:
     restart: unless-stopped
     depends_on:
       - app
-    # Where the browser reaches the backend API (host-published port 5000).
     environment:
+      # Where the browser reaches the API (host-published port 5000).
       API_BASE: http://localhost:5000
+      # Where nginx proxies /api and /auth (compose-network name of the app).
+      BACKEND_ORIGIN: http://app:5000
     ports:
       - "8080:80"
 

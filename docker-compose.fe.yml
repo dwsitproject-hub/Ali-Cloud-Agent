@@ -17,7 +17,10 @@ services:
     container_name: cloud-agent-fe
     restart: unless-stopped
     environment:
-      API_BASE: ${API_BASE:?set API_BASE to the backend public URL}
+      # Browser-facing API base (usually the same single origin as the site).
+      API_BASE: ${API_BASE:?set API_BASE to the site's public origin}
+      # Where nginx proxies /api + /auth (the backend, reachable from this box).
+      BACKEND_ORIGIN: ${BACKEND_ORIGIN:?set BACKEND_ORIGIN to the backend origin}
     ports:
       # host:container. Shared box? Override FE_HOST_PORT to avoid a clash on 80
       # (check first: sudo ss -tlnp | grep ':80 '). The TLS proxy/SLB forwards here.
