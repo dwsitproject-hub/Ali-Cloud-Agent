@@ -150,13 +150,12 @@ def _idp_initiated_claims(client, code, code_verifier):
     JWKS (issuer + audience + expiry). No session state exists in this flow, so
     ``state`` is not checked — the id_token signature is the trust anchor."""
     meta = client.load_server_metadata()
-    # The DWS Hub token endpoint expects a JSON body (not form-encoded).
-    # IdP-initiated: the Hub built the authorize request, so there is no
-    # client-supplied redirect_uri bound to the code — omit it (sending one the
-    # code isn't bound to yields invalid_grant).
+    # The DWS Hub token endpoint expects a JSON body (not form-encoded), and
+    # requires redirect_uri (omitting it -> invalid_request).
     resp = requests.post(meta["token_endpoint"], timeout=10, json={
         "grant_type": "authorization_code",
         "code": code,
+        "redirect_uri": config.OIDC_REDIRECT_URI,
         "client_id": config.OIDC_CLIENT_ID,   # public client (PKCE) — no secret
         "code_verifier": code_verifier,
     })
