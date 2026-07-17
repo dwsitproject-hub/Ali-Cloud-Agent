@@ -157,7 +157,9 @@ def _idp_initiated_claims(client, code, code_verifier):
         "client_id": config.OIDC_CLIENT_ID,   # public client (PKCE) — no secret
         "code_verifier": code_verifier,
     })
-    resp.raise_for_status()
+    if resp.status_code != 200:
+        # Surface the OAuth error body (e.g. invalid_grant, redirect_uri_mismatch).
+        raise RuntimeError(f"token endpoint {resp.status_code}: {resp.text[:500]}")
     id_token = resp.json().get("id_token")
     if not id_token:
         raise RuntimeError("no id_token in token response")
