@@ -11,10 +11,11 @@ Flask-SQLAlchemy==3.1.1
 Flask-Migrate==4.0.7
 psycopg2-binary==2.9.9
 
-# Auth: SSO (HS256 JWT from the Hub) + session login + CSRF
+# Auth: DWS Hub SSO via OIDC (Authorization Code + PKCE) + session login + CSRF
 Flask-Login==0.6.3
-PyJWT==2.9.0
 Flask-WTF==1.2.1
+Authlib==1.3.2          # OIDC client: discovery, PKCE, token exchange, JWKS verify
+requests==2.32.3        # HTTP transport for Authlib's Flask integration
 
 # CORS: the standalone frontend calls this API cross-origin with credentials
 Flask-Cors==4.0.1

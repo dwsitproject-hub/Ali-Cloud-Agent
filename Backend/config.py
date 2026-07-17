@@ -83,13 +83,26 @@ DATABASE_URL = os.getenv(
     "postgresql+psycopg2://cloudagent:cloudagent@localhost:5440/cloudagent",
 ).strip()
 
-# --- Auth / SSO (see Docs/SSO-TARGET-APP-INTEGRATION.md, used in Phase 7) -----
+# --- Auth ---------------------------------------------------------------------
+# Flask session-signing key (OUR app's own secret; not from the Hub).
 SECRET_KEY = os.getenv("SECRET_KEY", "dev-insecure-change-me").strip()
-SSO_TOKEN_SECRET = os.getenv("SSO_TOKEN_SECRET", "").strip()
-SSO_TOKEN_LEEWAY = int(os.getenv("SSO_TOKEN_LEEWAY", "10"))
+
+# DWS Hub SSO via OpenID Connect. The Hub is an OAuth2/OIDC provider and this app
+# is a PUBLIC client (Authorization Code + PKCE, no client secret). The discovery
+# URL exposes the authorize/token/jwks endpoints; see auth/sso.py.
+OIDC_DISCOVERY_URL = os.getenv("OIDC_DISCOVERY_URL", "").strip()  # .../.well-known/openid-configuration
+OIDC_CLIENT_ID = os.getenv("OIDC_CLIENT_ID", "").strip()
+# Our callback; must be in the Hub's registered redirect_uri allowlist.
+OIDC_REDIRECT_URI = os.getenv("OIDC_REDIRECT_URI", "").strip()
+OIDC_SCOPES = os.getenv("OIDC_SCOPES", "openid email profile").strip()
+
 # Dev login bypass (no Hub needed). Defaults ON whenever MOCK_MODE is on.
 DEV_LOGIN_ENABLED = _b("DEV_LOGIN_ENABLED", MOCK_MODE)
 DEV_LOGIN_EMAIL = os.getenv("DEV_LOGIN_EMAIL", "dev@localhost").strip()
+
+
+def oidc_configured() -> bool:
+    return bool(OIDC_DISCOVERY_URL and OIDC_CLIENT_ID and OIDC_REDIRECT_URI)
 # Cross-site SSO landing needs SameSite=None; Secure (HTTPS). Relax for local HTTP.
 SESSION_COOKIE_SECURE = _b("SESSION_COOKIE_SECURE", not DEV_LOGIN_ENABLED)
 SESSION_COOKIE_SAMESITE = os.getenv(
@@ -294,10 +307,10 @@ def validate_startup() -> tuple[list, list]:
         errors.append(
             "DM_ACCOUNT_NAME (a verified DirectMail sender address) is required "
             "when MOCK_MODE=false")
-    if not SSO_TOKEN_SECRET and not DEV_LOGIN_ENABLED:
+    if not oidc_configured() and not DEV_LOGIN_ENABLED:
         errors.append(
-            "SSO_TOKEN_SECRET (shared with the Hub) is required when "
-            "DEV_LOGIN_ENABLED=false — no one could sign in otherwise")
+            "OIDC_DISCOVERY_URL / OIDC_CLIENT_ID / OIDC_REDIRECT_URI (DWS Hub SSO) "
+            "are required when DEV_LOGIN_ENABLED=false — no one could sign in otherwise")
 
     if DEV_LOGIN_ENABLED:
         warnings.append(

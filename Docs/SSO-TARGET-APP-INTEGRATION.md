@@ -1,5 +1,11 @@
 # SSO: How Target Applications Decode the Token
 
+> **Note:** This document describes the DWS Hub's older **HS256 shared-secret POST
+> bridge**. Cloud Agent Monitoring no longer uses it — it now integrates via
+> **OpenID Connect (Authorization Code + PKCE)** as a public client (see
+> `Backend/auth/sso.py` and `Docs/DEPLOY-STAGING.md` §8). Kept for reference.
+
+
 This document describes how **target applications** (downstream apps that receive users from Downstream Hub via SSO) should receive, verify, and decode the SSO token so that SSO works end-to-end.
 
 ---

@@ -1,22 +1,9 @@
-"""SSO + login-guard behavior."""
-import time
-import uuid
+"""Auth + login-guard behavior (OIDC/PKCE + dev-login).
 
-import jwt
-
+Full OIDC round-trips need a live Hub, so here we cover the login guard, the
+public endpoints, the dev-login bypass, and that the OIDC routes are gated when
+OIDC isn't configured (the test env runs on dev-login, no Hub)."""
 import config
-
-
-def _token(secret=None, exp_delta=60, user_id=None, email="user@example.com",
-           alg="HS256"):
-    now = int(time.time())
-    payload = {
-        "user_id": user_id or str(uuid.uuid4()),
-        "email": email,
-        "iat": now,
-        "exp": now + exp_delta,
-    }
-    return jwt.encode(payload, secret or config.SSO_TOKEN_SECRET, algorithm=alg)
 
 
 # --- login guard (API-only backend) ----------------------------------------
@@ -49,7 +36,17 @@ def test_login_redirects_to_frontend(anon_client):
 def test_auth_info_is_public(anon_client):
     r = anon_client.get("/auth/info")
     assert r.status_code == 200
-    assert "dev_login_enabled" in r.get_json()
+    body = r.get_json()
+    assert "oidc_enabled" in body and "dev_login_enabled" in body
+    # Test env has no OIDC configured, dev-login on.
+    assert body["oidc_enabled"] is False
+    assert body["dev_login_enabled"] is True
+
+
+def test_oidc_login_404_when_not_configured(anon_client):
+    # No OIDC_DISCOVERY_URL/CLIENT_ID/REDIRECT_URI in the test env.
+    assert anon_client.get("/auth/oidc/login").status_code == 404
+    assert anon_client.get("/auth/oidc/callback").status_code == 404
 
 
 def test_dev_login_then_api_reachable(client):
@@ -61,32 +58,3 @@ def test_csrf_endpoint_requires_login_and_returns_token(anon_client, client):
     assert anon_client.get("/api/csrf").status_code == 401
     body = client.get("/api/csrf").get_json()
     assert body["csrf_token"]
-
-
-# --- /auth/hub JWT verification --------------------------------------------
-def test_hub_valid_token_logs_in(anon_client):
-    r = anon_client.post("/auth/hub", data={"token": _token()})
-    assert r.status_code == 303
-    # logs in, then redirects to the standalone frontend
-    assert r.headers["Location"].startswith(config.FRONTEND_URL)
-    # session established -> API now reachable on the same client
-    assert anon_client.get("/api/status").status_code == 200
-
-
-def test_hub_missing_token(anon_client):
-    assert anon_client.post("/auth/hub", data={}).status_code == 400
-
-
-def test_hub_expired_token(anon_client):
-    r = anon_client.post("/auth/hub", data={"token": _token(exp_delta=-60)})
-    assert r.status_code == 401
-
-
-def test_hub_bad_signature(anon_client):
-    r = anon_client.post("/auth/hub", data={"token": _token(secret="wrong-secret")})
-    assert r.status_code == 401
-
-
-def test_hub_non_uuid_user_id(anon_client):
-    r = anon_client.post("/auth/hub", data={"token": _token(user_id="not-a-uuid")})
-    assert r.status_code == 400

@@ -48,8 +48,10 @@ dashboard shows everything grouped by environment. Access is gated by SSO
 - `Backend/state.py` - **DB-backed** persistence: `set_last_scan`/`set_last_alert`
   write rows; `snapshot()` reconstructs the legacy dict shapes for `/api/status`.
 - `Backend/instances_api.py` - instance CRUD API + `/api/instances/meta` (roles+groups).
-- `Backend/auth/sso.py` - `/auth/hub` (Hub JWT), `/auth/dev-login`, `/auth/info`
-  (public), `/auth/login` + `/auth/logout` (redirect to `FRONTEND_URL`).
+- `Backend/auth/sso.py` - DWS Hub SSO via **OIDC (Authlib, Auth Code + PKCE,
+  public client)**: `/auth/oidc/login` + `/auth/oidc/callback`; plus
+  `/auth/dev-login`, `/auth/info` (public), `/auth/login`+`/auth/logout` (redirect
+  to `FRONTEND_URL`). `init_oauth(app)` registers the client.
 - `Backend/config.py` - env settings + `METRIC_TEMPLATES`, `SERVICE_CHECKS_BY_ROLE`,
   `INSTANCE_GROUPS` (seed only), `build_metrics()`/`build_service_checks()`.
 - `Backend/seed.py` - `flask seed` (idempotent: groups/instances/dev-user).
@@ -60,8 +62,9 @@ dashboard shows everything grouped by environment. Access is gated by SSO
 POST `/api/scan` (`?auto_alert=true`) | POST `/api/send` | GET `/api/csrf` |
 GET `/api/health` (liveness, public) | GET `/api/ready` (readiness: DB + scan
 freshness, public) | GET/POST `/api/instances`, GET `/api/instances/meta`,
-PATCH/DELETE `/api/instances/<id>` | POST `/auth/hub`, GET `/auth/info` (public),
-`/auth/dev-login`, `/auth/login` (→ FE login), `/auth/logout`.
+PATCH/DELETE `/api/instances/<id>` | GET `/auth/oidc/login` +
+`/auth/oidc/callback` (OIDC), GET `/auth/info` (public), `/auth/dev-login`,
+`/auth/login` (→ FE login), `/auth/logout`.
 All routes require login except `/api/health`, `/api/ready`, and `/auth/*`.
 `/api/*` returns 401 JSON when anonymous. Login/SSO redirect to `FRONTEND_URL`.
 
@@ -77,7 +80,8 @@ All routes require login except `/api/health`, `/api/ready`, and `/auth/*`.
 - `MOCK_MODE=true` -> synthetic metrics, no Alibaba calls, no email. Also flips
   `DEV_LOGIN_ENABLED` on by default, so `/auth/dev-login` works without the Hub.
 - Live needs `.env` with `ALIBABA_ACCESS_KEY_ID/SECRET`, regions, DirectMail
-  sender, `DATABASE_URL`, `SECRET_KEY`, and `SSO_TOKEN_SECRET` (shared with the Hub).
+  sender, `DATABASE_URL`, `SECRET_KEY`, and the DWS Hub OIDC settings
+  (`OIDC_DISCOVERY_URL`, `OIDC_CLIENT_ID`, `OIDC_REDIRECT_URI`).
 - Tests: `MOCK_MODE=true python -m pytest Backend/tests` (needs Postgres up).
   Fixtures: `client` (authed via dev-login), `anon_client`.
 
@@ -100,9 +104,11 @@ All routes require login except `/api/health`, `/api/ready`, and `/auth/*`.
   persists it as a side effect; `snapshot()` rebuilds the same shape from DB for
   `/api/status`. Keep these JSON shapes stable — `Backend/tests/test_contract.py`
   guards them.
-- SSO: `/auth/hub` is CSRF-exempt (JWT signature is the auth check). Session
-  cookies use `SameSite=None; Secure` in prod (`Lax`/insecure in dev). The Hub
-  POSTs an HS256 JWT; verify with `SSO_TOKEN_SECRET`.
+- SSO: OIDC Authorization Code + PKCE (Authlib). SP-initiated: `/auth/oidc/login`
+  → Hub authorize → `/auth/oidc/callback` exchanges the code and verifies the
+  id_token via the Hub JWKS. Public client (no secret). Session cookies:
+  `SameSite=None; Secure` for split-origin HTTPS, or `Lax`/insecure for
+  single-origin HTTP staging. `OIDC_REDIRECT_URI` must be on the Hub allowlist.
 - Never commit `.env` (gitignored). Region: ECS metrics `ap-southeast-5`;
   DirectMail `ap-southeast-1` (no Jakarta endpoint).
 - Migrations live in `Backend/migrations/` (pinned via `Migrate(directory=...)`).

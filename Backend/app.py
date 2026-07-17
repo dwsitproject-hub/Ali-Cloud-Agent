@@ -38,7 +38,8 @@ from db import db
 # Endpoints reachable without a login session.
 _PUBLIC_ENDPOINTS = {
     "static", "main.health", "main.ready",
-    "auth.login", "auth.hub", "auth.dev_login", "auth.logout", "auth.info",
+    "auth.login", "auth.info", "auth.dev_login", "auth.logout",
+    "auth.oidc_login", "auth.oidc_callback",
 }
 
 logging.basicConfig(level=logging.INFO,
@@ -204,14 +205,13 @@ def create_app() -> Flask:
             return None
         return _unauthorized()
 
-    from auth.sso import auth_bp
+    from auth.sso import auth_bp, init_oauth
     from instances_api import instances_bp
     app.register_blueprint(main_bp)
     app.register_blueprint(instances_bp)
     app.register_blueprint(auth_bp)
-    # The Hub's cross-site POST carries no CSRF token; the JWT signature is the
-    # authenticity check, so exempt just that endpoint.
-    csrf.exempt(app.view_functions["auth.hub"])
+    # Register the DWS Hub OIDC client (Authorization Code + PKCE public client).
+    init_oauth(app)
     return app
 
 

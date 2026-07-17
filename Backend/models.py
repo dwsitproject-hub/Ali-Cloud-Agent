@@ -45,8 +45,9 @@ def enabled_instance_dicts() -> list:
 
 class User(UserMixin, db.Model):
     __tablename__ = "users"
-    # Hub user_id (UUID string) is the stable primary key.
-    id = db.Column(db.String(36), primary_key=True)
+    # OIDC `sub` claim from the Hub (stable subject id) is the primary key.
+    # Wide enough for arbitrary provider subject formats, not just a UUID.
+    id = db.Column(db.String(255), primary_key=True)
     email = db.Column(db.String(255), nullable=False, index=True)
     created_at = db.Column(db.DateTime(timezone=True), default=_utcnow, nullable=False)
     last_login_at = db.Column(db.DateTime(timezone=True))

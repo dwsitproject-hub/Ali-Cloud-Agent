@@ -26,8 +26,9 @@
   <div class="card">
     <div class="logo">☁ Cloud Agent Monitoring</div>
     <h1>Sign in required</h1>
-    <p>This dashboard is protected. Access it through the Downstream Hub, which
-       signs you in automatically via SSO.</p>
+    <p>This dashboard is protected. Sign in through the DWS Hub (single sign-on).</p>
+
+    <a class="btn" id="hubBtn" href="#" style="display:none">Sign in with DWS Hub</a>
 
     <div id="devWrap" style="display:none">
       <div class="divider">Local development</div>
@@ -38,14 +39,18 @@
 <script src="config.js"></script>
 <script>
 const API = (window.APP_CONFIG && window.APP_CONFIG.apiBase) || '';
-// Top-level navigation (not fetch) so the backend can set the session cookie
-// first-party, then redirect back to the frontend.
+// Top-level navigations (not fetch) so the backend can run the OIDC redirect /
+// set the session cookie first-party, then redirect back to the frontend.
+document.getElementById('hubBtn').href = API + '/auth/oidc/login';
 document.getElementById('devBtn').href = API + '/auth/dev-login';
 
-// Show the dev-login button only when the backend has it enabled.
+// Show whichever sign-in options the backend has enabled.
 fetch(API + '/auth/info', {credentials:'include'})
-  .then(r => r.ok ? r.json() : {dev_login_enabled:false})
-  .then(info => { if(info.dev_login_enabled){ document.getElementById('devWrap').style.display='block'; } })
+  .then(r => r.ok ? r.json() : {})
+  .then(info => {
+    if(info.oidc_enabled){ document.getElementById('hubBtn').style.display='block'; }
+    if(info.dev_login_enabled){ document.getElementById('devWrap').style.display='block'; }
+  })
   .catch(()=>{});
 </script>
 </body>

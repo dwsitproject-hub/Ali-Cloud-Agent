@@ -30,7 +30,8 @@ The pieces this build wired up:
 3. **Scheduling** — `Backend/scheduler.py` runs the scan on a 5-minute cron and
    auto-sends on breach.
 4. **PostgreSQL + migrations** — inventory and history persist across restarts.
-5. **SSO + dev login** — `Backend/auth/sso.py` verifies the Hub's HS256 JWT.
+5. **SSO + dev login** — `Backend/auth/sso.py` authenticates via DWS Hub OIDC
+   (Authorization Code + PKCE; id_token verified against the Hub's JWKS).
 
 ## Quick start (mock mode — no credentials needed)
 
@@ -81,7 +82,10 @@ click **Continue with dev login** at `/auth/login`.
    # Database + auth (required)
    DATABASE_URL=postgresql+psycopg2://user:pass@db-host:5432/cloudagent
    SECRET_KEY=<random; python -c "import secrets;print(secrets.token_urlsafe(48))">
-   SSO_TOKEN_SECRET=<shared secret from the Hub operator>
+   # DWS Hub SSO via OIDC (public client, PKCE — no client secret):
+   OIDC_DISCOVERY_URL=https://<hub-host>/api/sso/.well-known/openid-configuration
+   OIDC_CLIENT_ID=<client_id from the Hub>
+   OIDC_REDIRECT_URI=https://<app-host>/auth/oidc/callback
    DEV_LOGIN_ENABLED=false       # real SSO only in production
    SESSION_COOKIE_SAMESITE=None  # cross-site SSO landing (needs HTTPS)
    SESSION_COOKIE_SECURE=true
@@ -90,8 +94,10 @@ click **Continue with dev login** at `/auth/login`.
 4. `python Backend/app.py`. The app will now make real API calls and require SSO.
 
 Credentials are read from the environment only — nothing is hard-coded, and
-`.env` is git-ignored. See `Docs/SSO-TARGET-APP-INTEGRATION.md` for the SSO
-contract (the Hub POSTs an HS256 JWT to `/auth/hub`).
+`.env` is git-ignored. The app authenticates against the DWS Hub via **OpenID
+Connect (Authorization Code + PKCE)** — see `Docs/DEPLOY-STAGING.md` §8 for the
+Hub registration. (`Docs/SSO-TARGET-APP-INTEGRATION.md` documents the Hub's older
+HS256 bridge, which this app no longer uses.)
 
 ## Configuring what to monitor
 
@@ -124,7 +130,8 @@ are allowed via CORS (`CORS_ORIGINS`) with credentials.
 | GET/POST    | `/api/instances`       | List / create instances                       |
 | GET         | `/api/instances/meta`  | Roles + groups (for the frontend form)        |
 | PATCH/DELETE| `/api/instances/<id>`  | Toggle enabled / edit / delete                |
-| POST        | `/auth/hub`            | SSO entry — Hub posts an HS256 JWT            |
+| GET         | `/auth/oidc/login`     | Begin DWS Hub OIDC login (Auth Code + PKCE)   |
+| GET         | `/auth/oidc/callback`  | OIDC redirect: exchange code, verify id_token |
 | GET         | `/auth/info`           | Whether dev-login is enabled (public)         |
 | GET/POST    | `/auth/dev-login`      | Local dev login (gated by `DEV_LOGIN_ENABLED`)|
 | GET         | `/auth/login`,`/logout`| Redirect to the frontend login page / sign out|
@@ -145,7 +152,7 @@ Backend/                  BACKEND API (Flask/gunicorn)
   state.py                DB-backed persist + snapshot() + history pruning
   seed.py                 `flask seed` (idempotent inventory + dev user)
   instances_api.py        Instance CRUD API (+ /meta)
-  auth/sso.py             SSO (/auth/hub) + dev login + session + /auth/info
+  auth/sso.py             DWS Hub OIDC (Authlib PKCE) + dev login + session
   agents/agent1_scanner.py   CloudMonitor scan + threshold evaluation
   agents/agent2_alerter.py   DirectMail email composition + send
   migrations/             Alembic migrations
@@ -365,11 +372,13 @@ worker would duplicate the scheduler and double every scan/alert.)
 - State and history live in **PostgreSQL**, but the **scheduler must still be a
   single process** (one APScheduler). Keep gunicorn at `--workers 1`; use
   `--threads N` for web concurrency so a long scan can't block dashboard polling.
-- Provide a strong `SECRET_KEY` and the Hub's `SSO_TOKEN_SECRET`; set
-  `DEV_LOGIN_ENABLED=false`, `SESSION_COOKIE_SECURE=true`, and serve over HTTPS so
-  the cross-site SSO landing (`SameSite=None`) works. When `MOCK_MODE=false` the
-  app **fails fast at boot** if credentials, `DM_ACCOUNT_NAME`, `SSO_TOKEN_SECRET`,
-  or a non-default `SECRET_KEY` are missing — it will not silently run in mock mode.
+- Provide a strong `SECRET_KEY` and the DWS Hub OIDC settings (`OIDC_DISCOVERY_URL`,
+  `OIDC_CLIENT_ID`, `OIDC_REDIRECT_URI`); set `DEV_LOGIN_ENABLED=false`. Over HTTPS
+  with a split FE/BE origin, use `SESSION_COOKIE_SECURE=true` + `SameSite=None`;
+  for single-origin HTTP staging use `SameSite=Lax` + `SECURE=false`. When
+  `MOCK_MODE=false` the app **fails fast at boot** if credentials, `DM_ACCOUNT_NAME`,
+  the OIDC settings, or a non-default `SECRET_KEY` are missing — it will not
+  silently run in mock mode.
 - Run DB migrations (`flask db upgrade`) on deploy. Scan history is pruned after
   every cycle per `HISTORY_RETENTION_DAYS` (default 30; set 0 to keep everything).
 - **Alerting is transition-based** (flood control): a mail goes out on a new

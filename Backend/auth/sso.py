@@ -1,28 +1,28 @@
-"""SSO authentication (Downstream Hub) + local dev login.
+"""Authentication: DWS Hub SSO via OpenID Connect (Authorization Code + PKCE)
+plus a local dev-login bypass.
 
-The Hub auto-POSTs a single-use HS256 JWT to POST /auth/hub (see
-Docs/SSO-TARGET-APP-INTEGRATION.md). We verify it with the shared secret,
-upsert the user, and establish a Flask-Login session.
+The DWS Hub is an OAuth2/OIDC provider and this app is a **public client**
+(PKCE, no client secret). Flow:
 
-Routes
-  GET  /auth/login       redirect to the frontend login page
-  GET  /auth/info        public: whether dev-login is enabled (for the SPA)
-  POST /auth/hub         Hub SSO entry (CSRF-exempt; verified by JWT signature)
-  GET  /auth/dev-login   local dev bypass (gated by DEV_LOGIN_ENABLED)
-  POST /auth/dev-login
-  GET  /auth/logout
+  GET /auth/oidc/login    -> redirect to the Hub's authorize endpoint (with PKCE)
+  GET /auth/oidc/callback -> exchange the code (+verifier) for tokens, verify the
+                             id_token via the Hub's JWKS, establish a session
+  GET /auth/login         -> send unauthenticated visitors to the frontend login page
+  GET /auth/info          -> public: which sign-in options are available
+  GET/POST /auth/dev-login-> local bypass (gated by DEV_LOGIN_ENABLED)
+  GET /auth/logout
 
-On success the user is redirected to config.FRONTEND_URL (the standalone
-frontend), which then calls this API with the established session cookie.
+Authlib handles discovery (``server_metadata_url``), the PKCE code_verifier/
+challenge, ``state``/``nonce``, the token exchange at the Hub's token endpoint,
+and id_token signature/claims validation against the Hub's JWKS.
 """
 from __future__ import annotations
 
 import logging
-import uuid
 from datetime import datetime, timezone
 
-import jwt
-from flask import Blueprint, abort, jsonify, redirect, request
+from authlib.integrations.flask_client import OAuth
+from flask import Blueprint, abort, jsonify, redirect
 from flask_login import login_user, logout_user
 
 import config
@@ -34,13 +34,37 @@ log = logging.getLogger("auth")
 
 auth_bp = Blueprint("auth", __name__, url_prefix="/auth")
 
+oauth = OAuth()
+_HUB = "dwshub"  # Authlib client registration name
+
+
+def init_oauth(app) -> None:
+    """Register the DWS Hub OIDC client. Called from app.create_app().
+
+    Registration is lazy about the network — Authlib fetches the discovery
+    document + JWKS on first use, not here, so the app boots even if the Hub is
+    briefly unreachable. Skipped entirely when OIDC isn't configured (e.g. local
+    dev running on the dev-login bypass)."""
+    oauth.init_app(app)
+    if config.oidc_configured():
+        oauth.register(
+            name=_HUB,
+            client_id=config.OIDC_CLIENT_ID,
+            server_metadata_url=config.OIDC_DISCOVERY_URL,
+            client_kwargs={
+                "scope": config.OIDC_SCOPES,
+                "code_challenge_method": "S256",   # PKCE
+            },
+            token_endpoint_auth_method="none",     # public client — no secret
+        )
+
 
 def _now():
     return datetime.now(timezone.utc)
 
 
 def _login_existing_or_new(user_id: str, email: str) -> None:
-    """Upsert a user by Hub user_id and start a session."""
+    """Upsert a user by stable id (OIDC ``sub``) and start a session."""
     user = db.session.get(User, user_id)
     if user is None:
         user = User(id=user_id, email=email)
@@ -60,47 +84,48 @@ def login():
 
 @auth_bp.route("/info")
 def info():
-    """Public: lets the frontend login page decide whether to show dev-login."""
-    return jsonify(dev_login_enabled=config.DEV_LOGIN_ENABLED)
+    """Public: lets the frontend login page show the right sign-in option(s)."""
+    return jsonify(
+        oidc_enabled=config.oidc_configured(),
+        dev_login_enabled=config.DEV_LOGIN_ENABLED,
+    )
 
 
-@auth_bp.route("/hub", methods=["POST"])
-def hub():
-    """Receive and verify the Hub's SSO token, then log the user in.
+@auth_bp.route("/oidc/login")
+def oidc_login():
+    """Begin the OIDC Authorization Code + PKCE flow (redirect to the Hub)."""
+    if not config.oidc_configured():
+        abort(404)
+    client = oauth.create_client(_HUB)
+    return client.authorize_redirect(config.OIDC_REDIRECT_URI)
 
-    CSRF-exempt by design (cross-site POST from the Hub); the JWT signature is
-    the authenticity check. Exemption is registered in app.create_app().
-    """
-    token = request.form.get("token")
-    if not token:
-        return "Missing token", 400
-    if not config.SSO_TOKEN_SECRET:
-        log.error("SSO_TOKEN_SECRET is not configured")
-        return "SSO not configured on this server", 500
 
-    try:
-        payload = jwt.decode(
-            token, config.SSO_TOKEN_SECRET,
-            algorithms=["HS256"], leeway=config.SSO_TOKEN_LEEWAY,
-        )
-    except jwt.ExpiredSignatureError:
-        return "Token expired", 401
-    except jwt.InvalidTokenError:
-        return "Invalid token", 401
+@auth_bp.route("/oidc/callback")
+def oidc_callback():
+    """Handle the Hub redirect: exchange code, verify id_token, log in."""
+    if not config.oidc_configured():
+        abort(404)
+    client = oauth.create_client(_HUB)
+    # Validates state, exchanges the code (+PKCE verifier), and verifies the
+    # id_token's signature (JWKS), issuer, audience, expiry and nonce.
+    token = client.authorize_access_token()
+    claims = token.get("userinfo") or {}
+    if not claims.get("sub"):
+        # Fall back to the userinfo endpoint if the id_token carried no claims.
+        try:
+            claims = client.userinfo(token=token)
+        except Exception:  # pragma: no cover - depends on the live provider
+            claims = {}
 
-    user_id = payload.get("user_id")
-    email = (payload.get("email") or "").strip().lower()
-    if not user_id or not email:
-        return "Invalid token payload", 400
-    try:
-        uuid.UUID(str(user_id))  # Hub user_id is a UUID
-    except ValueError:
-        return "Invalid user_id", 400
+    sub = claims.get("sub")
+    email = (claims.get("email") or "").strip().lower()
+    if not sub:
+        log.warning("OIDC callback: no 'sub' in id_token/userinfo")
+        return "Invalid token payload (no subject)", 400
 
-    _login_existing_or_new(str(user_id), email)
-    log.info("SSO login: %s", email)
-    # 303 so the browser issues a top-level GET to the frontend (carrying the
-    # new session cookie), which then calls this API.
+    _login_existing_or_new(str(sub), email)
+    log.info("OIDC login: %s", email or sub)
+    # 303 so the browser issues a top-level GET to the frontend with the cookie.
     return redirect(config.FRONTEND_URL, code=303)
 
 
