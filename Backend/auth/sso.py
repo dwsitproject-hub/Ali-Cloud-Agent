@@ -21,8 +21,10 @@ from __future__ import annotations
 import logging
 from datetime import datetime, timezone
 
+import requests
 from authlib.integrations.flask_client import OAuth
-from flask import Blueprint, abort, jsonify, redirect
+from authlib.jose import jwt as jose_jwt
+from flask import Blueprint, abort, jsonify, redirect, request
 from flask_login import login_user, logout_user
 
 import config
@@ -102,20 +104,33 @@ def oidc_login():
 
 @auth_bp.route("/oidc/callback")
 def oidc_callback():
-    """Handle the Hub redirect: exchange code, verify id_token, log in."""
+    """Handle the Hub redirect: exchange the code, verify the id_token, log in.
+
+    Supports both entry points:
+      * SP-initiated (our /auth/oidc/login started it): Authlib validates the
+        session state/nonce and exchanges the code with the verifier it stored.
+      * IdP-initiated (e.g. clicking the app tile in the DWS Hub dashboard): the
+        Hub generated the PKCE challenge and returns the code + code_verifier, so
+        there's no session state to match — we exchange + verify manually.
+    """
     if not config.oidc_configured():
         abort(404)
     client = oauth.create_client(_HUB)
-    # Validates state, exchanges the code (+PKCE verifier), and verifies the
-    # id_token's signature (JWKS), issuer, audience, expiry and nonce.
-    token = client.authorize_access_token()
-    claims = token.get("userinfo") or {}
-    if not claims.get("sub"):
-        # Fall back to the userinfo endpoint if the id_token carried no claims.
-        try:
-            claims = client.userinfo(token=token)
-        except Exception:  # pragma: no cover - depends on the live provider
-            claims = {}
+    try:
+        if request.args.get("code_verifier"):
+            claims = _idp_initiated_claims(
+                client, request.args.get("code"), request.args.get("code_verifier"))
+        else:
+            token = client.authorize_access_token()
+            claims = token.get("userinfo") or {}
+            if not claims.get("sub"):
+                try:
+                    claims = client.userinfo(token=token)
+                except Exception:  # pragma: no cover - depends on the live provider
+                    claims = {}
+    except Exception as exc:
+        log.warning("OIDC callback failed: %s: %s", type(exc).__name__, exc)
+        return "SSO login failed", 401
 
     sub = claims.get("sub")
     email = (claims.get("email") or "").strip().lower()
@@ -127,6 +142,32 @@ def oidc_callback():
     log.info("OIDC login: %s", email or sub)
     # 303 so the browser issues a top-level GET to the frontend with the cookie.
     return redirect(config.FRONTEND_URL, code=303)
+
+
+def _idp_initiated_claims(client, code, code_verifier):
+    """IdP-initiated token exchange: swap the Hub-supplied code + code_verifier
+    for tokens at the token endpoint, then verify the id_token against the Hub's
+    JWKS (issuer + audience + expiry). No session state exists in this flow, so
+    ``state`` is not checked — the id_token signature is the trust anchor."""
+    meta = client.load_server_metadata()
+    resp = requests.post(meta["token_endpoint"], timeout=10, data={
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": config.OIDC_REDIRECT_URI,
+        "client_id": config.OIDC_CLIENT_ID,   # public client (PKCE) — no secret
+        "code_verifier": code_verifier,
+    })
+    resp.raise_for_status()
+    id_token = resp.json().get("id_token")
+    if not id_token:
+        raise RuntimeError("no id_token in token response")
+    jwks = requests.get(meta["jwks_uri"], timeout=10).json()
+    claims = jose_jwt.decode(id_token, jwks, claims_options={
+        "iss": {"essential": True, "values": [meta["issuer"]]},
+        "aud": {"essential": True, "values": [config.OIDC_CLIENT_ID]},
+    })
+    claims.validate()   # exp / iss / aud
+    return claims
 
 
 @auth_bp.route("/dev-login", methods=["GET", "POST"])
