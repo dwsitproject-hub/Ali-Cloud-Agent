@@ -3,6 +3,8 @@
 Docs/DEPLOY-STAGING.md
 # Local DB dumps — not source.
 inventory.sql
+# Internal ops findings (IPs, other teams' systems) — keep local.
+Docs/klip-db-cpu-findings.md
 __pycache__/
 *.pyc
 .venv/

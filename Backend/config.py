@@ -42,12 +42,28 @@ ACCESS_KEY_SECRET = os.getenv("ALIBABA_ACCESS_KEY_SECRET", "").strip()
 CLOUDMONITOR_REGION = os.getenv("CLOUDMONITOR_REGION", "cn-hangzhou").strip()
 DIRECTMAIL_REGION = os.getenv("DIRECTMAIL_REGION", "cn-hangzhou").strip()
 
-# --- DirectMail --------------------------------------------------------------
+# --- Alert email transport ---------------------------------------------------
+# Agent 2 sends via SMTP when SMTP_HOST is set, otherwise via Alibaba DirectMail.
 DM_ACCOUNT_NAME = os.getenv("DM_ACCOUNT_NAME", "").strip()
 DM_FROM_ALIAS = os.getenv("DM_FROM_ALIAS", "Cloud Monitor").strip()
 ALERT_RECIPIENTS = [
     a.strip() for a in os.getenv("ALERT_RECIPIENTS", "").split(",") if a.strip()
 ]
+
+# SMTP (used when SMTP_HOST is set). SMTP_SECURE=true -> implicit SSL (e.g. 465);
+# false -> STARTTLS (e.g. 587). SMTP_REJECT_UNAUTHORIZED=false skips TLS cert
+# verification (for self-signed internal mail servers).
+SMTP_HOST = os.getenv("SMTP_HOST", "").strip()
+SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
+SMTP_SECURE = _b("SMTP_SECURE", False)
+SMTP_USER = os.getenv("SMTP_USER", "").strip()
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")   # verbatim (may contain symbols)
+SMTP_FROM = (os.getenv("SMTP_FROM", "").strip() or SMTP_USER)
+SMTP_REJECT_UNAUTHORIZED = _b("SMTP_REJECT_UNAUTHORIZED", True)
+
+
+def smtp_configured() -> bool:
+    return bool(SMTP_HOST and SMTP_USER)
 
 # --- Behaviour ---------------------------------------------------------------
 MOCK_MODE = _b("MOCK_MODE", True)
@@ -305,10 +321,10 @@ def validate_startup() -> tuple[list, list]:
         errors.append(
             "ALIBABA_ACCESS_KEY_ID / ALIBABA_ACCESS_KEY_SECRET are required when "
             "MOCK_MODE=false (otherwise the app cannot reach CloudMonitor/DirectMail)")
-    if not DM_ACCOUNT_NAME:
+    if not DM_ACCOUNT_NAME and not smtp_configured():
         errors.append(
-            "DM_ACCOUNT_NAME (a verified DirectMail sender address) is required "
-            "when MOCK_MODE=false")
+            "An alert email transport is required when MOCK_MODE=false: set the "
+            "SMTP_* vars (SMTP_HOST/SMTP_USER/…) or DM_ACCOUNT_NAME (DirectMail sender)")
     if not oidc_configured() and not DEV_LOGIN_ENABLED:
         errors.append(
             "OIDC_DISCOVERY_URL / OIDC_CLIENT_ID / OIDC_REDIRECT_URI (DWS Hub SSO) "

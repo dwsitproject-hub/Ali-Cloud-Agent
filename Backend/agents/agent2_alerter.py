@@ -10,10 +10,13 @@ API reference:
 from __future__ import annotations
 
 import html
+import logging
 from datetime import datetime, timezone
 
 import config
 from cloud_client import do_rpc
+
+log = logging.getLogger("alerter")
 
 DM_VERSION = "2015-11-23"
 
@@ -132,6 +135,7 @@ def build_email(scan: dict) -> dict:
 
 
 def _send_one(to_address: str, subject: str, html_body: str) -> dict:
+    """Send one email via Alibaba DirectMail (SingleSendMail)."""
     params = {
         "AccountName": config.DM_ACCOUNT_NAME,
         "AddressType": "1",          # 1 = use the configured sender address
@@ -146,10 +150,44 @@ def _send_one(to_address: str, subject: str, html_body: str) -> dict:
     return {"to": to_address, "ok": True, "request_id": resp.get("RequestId"), "error": None}
 
 
+def _send_via_smtp(recipients: list, subject: str, html_body: str) -> None:
+    """Send the HTML alert to all recipients via SMTP (SSL or STARTTLS).
+
+    Raises on failure (the caller records the error). SMTP_SECURE=true uses
+    implicit SSL (e.g. port 465); false uses STARTTLS (e.g. 587)."""
+    import smtplib
+    import ssl
+    from email.mime.text import MIMEText
+    from email.utils import formataddr
+
+    msg = MIMEText(html_body, "html", "utf-8")
+    msg["Subject"] = subject
+    msg["From"] = formataddr((config.DM_FROM_ALIAS, config.SMTP_FROM))
+    msg["To"] = ", ".join(recipients)
+
+    ctx = ssl.create_default_context()
+    if not config.SMTP_REJECT_UNAUTHORIZED:
+        ctx.check_hostname = False
+        ctx.verify_mode = ssl.CERT_NONE
+
+    if config.SMTP_SECURE:   # implicit SSL (e.g. :465)
+        with smtplib.SMTP_SSL(config.SMTP_HOST, config.SMTP_PORT,
+                              context=ctx, timeout=20) as srv:
+            srv.login(config.SMTP_USER, config.SMTP_PASSWORD)
+            srv.sendmail(config.SMTP_FROM, recipients, msg.as_string())
+    else:                    # STARTTLS (e.g. :587)
+        with smtplib.SMTP(config.SMTP_HOST, config.SMTP_PORT, timeout=20) as srv:
+            srv.ehlo()
+            srv.starttls(context=ctx)
+            srv.login(config.SMTP_USER, config.SMTP_PASSWORD)
+            srv.sendmail(config.SMTP_FROM, recipients, msg.as_string())
+
+
 def send_alert(scan: dict, recipients=None) -> dict:
     """Send the alert email for ``scan`` to each recipient.
 
-    Returns a summary dict. In mock mode no mail is transmitted.
+    Transport: SMTP when configured, else Alibaba DirectMail. In mock mode the
+    email is rendered but not transmitted. Returns a summary dict.
     """
     recipients = recipients or config.ALERT_RECIPIENTS
     email = build_email(scan)
@@ -160,7 +198,7 @@ def send_alert(scan: dict, recipients=None) -> dict:
                 "subject": email["subject"], "results": [], "sent_at": sent_at,
                 "preview_html": email["html_body"]}
 
-    if config.MOCK_MODE or not config.credentials_present():
+    if config.MOCK_MODE:
         return {
             "sent": False, "mode": "mock",
             "reason": "MOCK_MODE - email rendered but not transmitted",
@@ -169,15 +207,34 @@ def send_alert(scan: dict, recipients=None) -> dict:
             "preview_html": email["html_body"], "sent_at": sent_at,
         }
 
-    results = []
-    for r in recipients:
+    # --- live: pick a transport ---
+    if config.smtp_configured():
         try:
-            results.append(_send_one(r, email["subject"], email["html_body"]))
+            _send_via_smtp(recipients, email["subject"], email["html_body"])
+            return {"sent": True, "mode": "live", "transport": "smtp",
+                    "subject": email["subject"], "recipients": recipients,
+                    "results": [{"to": r, "ok": True, "error": None} for r in recipients],
+                    "sent_at": sent_at}
         except Exception as exc:
-            results.append({"to": r, "ok": False, "error": f"{type(exc).__name__}: {exc}"})
+            err = f"{type(exc).__name__}: {exc}"
+            log.error("SMTP send failed: %s", err)
+            return {"sent": False, "mode": "live", "transport": "smtp", "reason": err,
+                    "subject": email["subject"], "recipients": recipients,
+                    "results": [{"to": r, "ok": False, "error": err} for r in recipients],
+                    "sent_at": sent_at}
 
-    return {
-        "sent": any(x["ok"] for x in results), "mode": "live",
-        "subject": email["subject"], "recipients": recipients,
-        "results": results, "sent_at": sent_at,
-    }
+    if config.credentials_present() and config.DM_ACCOUNT_NAME:
+        results = []
+        for r in recipients:
+            try:
+                results.append(_send_one(r, email["subject"], email["html_body"]))
+            except Exception as exc:
+                results.append({"to": r, "ok": False, "error": f"{type(exc).__name__}: {exc}"})
+        return {"sent": any(x["ok"] for x in results), "mode": "live",
+                "transport": "directmail", "subject": email["subject"],
+                "recipients": recipients, "results": results, "sent_at": sent_at}
+
+    return {"sent": False, "mode": "live",
+            "reason": "no mail transport configured (set SMTP_* or DM_ACCOUNT_NAME)",
+            "subject": email["subject"], "recipients": recipients,
+            "results": [], "sent_at": sent_at}
