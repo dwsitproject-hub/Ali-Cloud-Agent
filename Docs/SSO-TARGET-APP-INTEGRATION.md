@@ -1,196 +1,575 @@
-# SSO: How Target Applications Decode the Token
+# Integrating an app with DWS Hub SSO — step-by-step guide
 
-> **Note:** This document describes the DWS Hub's older **HS256 shared-secret POST
-> bridge**. Cloud Agent Monitoring no longer uses it — it now integrates via
-> **OpenID Connect (Authorization Code + PKCE)** as a public client (see
-> `Backend/auth/sso.py` and `Docs/DEPLOY-STAGING.md` §8). Kept for reference.
+How to make your application accept single sign-on from **Downstream Hub (DWS Hub)**.
 
+This guide is written from a **real integration** (Cloud Agent Monitoring, Python/Flask)
+including every error we hit and what actually fixed it. Follow the steps in order —
+most of the pain comes from doing step 2 (URL layout) after step 5 (writing code).
 
-This document describes how **target applications** (downstream apps that receive users from Downstream Hub via SSO) should receive, verify, and decode the SSO token so that SSO works end-to-end.
+> **Which mode does the Hub use?** The Hub supports OpenID Connect (OIDC). That is what
+> this guide covers and what you should use. An older HS256 "POST bridge" mode also
+> exists and is documented in **Appendix B** for legacy apps only.
 
----
-
-## 1. How the token is delivered to your app
-
-1. The user clicks an application in the Hub dashboard.
-2. The Hub redirects the user to a **bridge page** on the Hub API.
-3. The bridge page **auto-POSTs** a form to **your application’s URL** with the token in the request body.
-
-**Contract:**
-
-- **HTTP method:** `POST`
-- **Content-Type:** `application/x-www-form-urlencoded` (standard form submit)
-- **Body field name:** `token`
-- **Body value:** A single-use **JWT string** (the SSO token)
-
-So your app will receive something like:
-
-```
-POST /auth/hub HTTP/1.1
-Content-Type: application/x-www-form-urlencoded
-
-token=eyJhbGciOiJIUzI1NiIsInR5cCI6IkpXVCJ9...
-```
-
-The Hub uses the **target URL** configured in Admin → Applications for your app. If that URL does not already contain `/auth/`, the Hub appends `/auth/hub` (e.g. `https://myapp.example.com` → `https://myapp.example.com/auth/hub`). Your app must expose a route that accepts this POST and reads the `token` from the body.
+**Reference implementation in this repo:** `Backend/auth/sso.py` (+ `Backend/config.py`).
 
 ---
 
-## 2. Token format and contents
+## Table of contents
 
-- **Format:** JWT (JSON Web Token), signed with **HS256**.
-- **Encoding:** UTF-8. The shared secret is used as a raw UTF-8 byte sequence (no base64 or other encoding of the secret).
+1. [What kind of SSO this is](#1-what-kind-of-sso-this-is)
+2. [Choose your URL layout FIRST](#2-choose-your-url-layout-first-most-important-step)
+3. [Confirm the Hub's discovery document](#3-confirm-the-hubs-discovery-document)
+4. [Register your app with the Hub admin](#4-register-your-app-with-the-hub-admin)
+5. [Configure your app](#5-configure-your-app)
+6. [Implement the two routes](#6-implement-the-two-routes)
+7. [Handle BOTH login flows](#7-handle-both-login-flows-the-biggest-gotcha)
+8. [The token exchange contract](#8-the-token-exchange-contract)
+9. [Verify it works](#9-verify-it-works)
+10. [Troubleshooting: every error we hit](#10-troubleshooting-every-error-we-hit)
+11. [Security checklist](#11-security-checklist)
+12. [Appendix A: session cookie rules](#appendix-a-session-cookie-rules)
+13. [Appendix B: legacy HS256 bridge](#appendix-b-legacy-hs256-post-bridge)
 
-### Payload claims (after verification)
+---
 
-| Claim   | Type   | Description |
-|---------|--------|-------------|
-| `user_id` | string (UUID) | Hub user ID. Use this as a stable identifier for the user in your system (e.g. map to your local user or create one). |
-| `email`   | string | User’s email address (lowercase). |
-| `iat`     | number | Issued-at time (Unix timestamp, seconds). |
-| `exp`     | number | Expiration time (Unix timestamp, seconds). |
+## 1. What kind of SSO this is
 
-**Example decoded payload (JSON):**
+The Hub is an **OAuth 2.0 / OpenID Connect provider**. Your app is a **public client**
+using **Authorization Code + PKCE**.
+
+| Property | Value | What it means for you |
+|---|---|---|
+| Flow | Authorization Code + **PKCE (S256)** | You send a code challenge; no secret needed |
+| Client type | **Public** (`token_endpoint_auth_methods: ["none"]`) | **There is NO `client_secret`.** Don't ask for one |
+| id_token signing | **RS256** | Verify with the Hub's **public JWKS**, not a shared secret |
+| Scopes | `openid`, `profile`, `email` | Request `openid email profile` |
+| Response type | `code` | |
+
+**Endpoints** (all discoverable — see step 3):
+
+| Purpose | Path |
+|---|---|
+| Discovery | `/api/sso/.well-known/openid-configuration` |
+| Authorize (browser) | `/api/sso/authorize` |
+| Token (server-to-server) | `/api/sso/token` |
+| JWKS (public keys) | `/api/sso/jwks` |
+
+> **Key mental model:** the *browser* talks to `/authorize`; your *backend* talks to
+> `/token` and `/jwks`. Both network paths must work (see step 5, "Network").
+
+---
+
+## 2. Choose your URL layout FIRST (most important step)
+
+This decision drives everything else. **Getting it wrong wastes hours** — we lost most
+of a day to it.
+
+The problem: after login, your app sets a **session cookie**. If your UI and your API
+live on **different origins**, the browser will only send that cookie when it is marked
+`SameSite=None; Secure` — and **`Secure` requires HTTPS**. So:
+
+> ### ⚠️ Over plain HTTP, a separate frontend origin and backend origin CANNOT share a login session.
+> Every API call comes back `401` and the user is bounced back to the login page forever.
+
+Pick one of these:
+
+### Option A — Single origin (recommended, works over HTTP)
+
+One hostname serves everything; a reverse proxy routes by path:
+
+```
+browser ──▶ http://app.example.com
+              ├── /api/*   ──▶ backend  (e.g. 10.0.0.20:5000)
+              ├── /auth/*  ──▶ backend
+              └── /*       ──▶ frontend (static UI)
+```
+
+- Cookie is **first-party** ⇒ `SameSite=Lax`, `Secure=false` works fine on HTTP.
+- No CORS needed.
+- **Use this for staging / internal domains without TLS.**
+
+Example nginx vhost (write it as a file — this is config, not shell commands):
+
+```nginx
+server {
+    listen 80;
+    server_name app.example.com;
+
+    location /api/  { proxy_pass http://10.0.0.20:5000; proxy_set_header Host $host; proxy_set_header X-Forwarded-For $remote_addr; }
+    location /auth/ { proxy_pass http://10.0.0.20:5000; proxy_set_header Host $host; proxy_set_header X-Forwarded-For $remote_addr; }
+    location /      { proxy_pass http://127.0.0.1:3040; proxy_set_header Host $host; }
+}
+```
+
+> **`proxy_set_header Host $host` is required.** Without it the backend sets the cookie
+> for an internal IP instead of your public hostname, and the browser never sends it back.
+
+### Option B — Split origins (requires HTTPS on both)
+
+`app.example.com` (UI) + `api.example.com` (backend), both over **HTTPS**, with
+`SameSite=None; Secure=true` and CORS configured for credentials.
+
+### Decision table
+
+| Your situation | Use | Cookie settings |
+|---|---|---|
+| HTTP only (internal/staging domain) | **Option A** | `SameSite=Lax`, `Secure=false` |
+| HTTPS on one hostname | Option A | `SameSite=Lax`, `Secure=true` |
+| HTTPS on two hostnames | Option B | `SameSite=None`, `Secure=true` + CORS |
+| HTTP on two hostnames | ❌ **impossible** | — |
+
+---
+
+## 3. Confirm the Hub's discovery document
+
+Before writing any code, prove the Hub is reachable and see its real configuration:
+
+```bash
+curl -s https://<hub-host>/api/sso/.well-known/openid-configuration
+```
+
+Expected (formatted for readability):
 
 ```json
 {
-  "user_id": "550e8400-e29b-41d4-a716-446655440000",
-  "email": "user@example.com",
-  "iat": 1709301600,
-  "exp": 1709301660
+  "issuer": "https://<hub-host>",
+  "authorization_endpoint": "https://<hub-host>/api/sso/authorize",
+  "token_endpoint": "https://<hub-host>/api/sso/token",
+  "jwks_uri": "https://<hub-host>/api/sso/jwks",
+  "response_types_supported": ["code"],
+  "subject_types_supported": ["public"],
+  "id_token_signing_alg_values_supported": ["RS256"],
+  "code_challenge_methods_supported": ["S256"],
+  "scopes_supported": ["openid", "profile", "email"],
+  "token_endpoint_auth_methods_supported": ["none"]
 }
 ```
 
-- **Default lifetime:** 60 seconds (`exp - iat = 60`). Configurable on the Hub via `SSO_TOKEN_EXPIRY_SECONDS` (env). Your app should **reject tokens with `exp` in the past**.
+Also confirm the keys are published:
 
----
-
-## 3. Shared secret
-
-The token is signed with a **shared secret** that must be the same on both sides:
-
-- **Hub (issuer):** Uses the environment variable `SSO_TOKEN_SECRET`.
-- **Target app (verifier):** Must use the **exact same value** to verify the signature.
-
-You must obtain this value securely from the Hub operator (e.g. via a secure channel or secrets manager). Do not expose it in client-side code or in URLs.
-
-- **Secret format:** Arbitrary string (UTF-8). No base64 or hex encoding is applied to the secret; both Hub and target app use the raw string as the HMAC key (in UTF-8 bytes for HS256).
-
-### How to get the SSO_TOKEN_SECRET
-
-**If you run the Hub (Hub operator / admin):**
-
-- The secret is **set by you** in the Hub’s environment. It is **not** generated or shown in the Hub UI or API (by design, to avoid exposing it).
-- **Local / development:** In the Hub project root, copy `.env.example` to `.env` and set:
-  ```bash
-  SSO_TOKEN_SECRET=your-sso-shared-secret-change-in-production
-  ```
-  Replace the value with a long, random string in production (see below).
-- **Production:** Set the `SSO_TOKEN_SECRET` environment variable in your deployment (e.g. server env, Docker env, or your platform’s secrets/config). Use a strong random value; for example:
-  ```bash
-  # Generate a 32-byte secret (paste into .env or your secrets manager)
-  openssl rand -base64 32
-  ```
-  You can use that output as-is as the secret (both Hub and target apps use the same **exact** string).
-- **Sharing with target apps:** Send the secret to each target app team through a **secure channel** (e.g. encrypted message, secrets manager handoff, or in-person). Do not put it in email, docs in version control, or public URLs.
-
-**If you run a target application:**
-
-- You **do not** read the secret from the Hub automatically. There is no API or screen in the Hub that returns `SSO_TOKEN_SECRET`.
-- **Obtain the value from the Hub administrator** (the team that runs Downstream Hub). They will set the same secret on the Hub and share it with you via a secure channel.
-- Store it in your app’s environment or secrets manager (e.g. `SSO_TOKEN_SECRET` in your `.env` or deployment config). Use it only on the server side to verify the JWT; never expose it to the browser or in client code.
-
----
-
-## 4. How to verify and decode the token (target app)
-
-1. **Read the token** from the POST body (field name `token`).
-2. **Verify signature and expiry** using the shared secret and HS256. Reject the request if:
-   - Signature is invalid, or
-   - Token is expired (`exp` &lt; current time), or
-   - Token is malformed.
-3. **Use the payload** (`user_id`, `email`) to identify or create the user in your app and establish a session (e.g. issue your own cookie or JWT).
-
-Do **not** trust the token without cryptographic verification. Do **not** use the token for authorization beyond “this request was signed by the Hub with the shared secret”; do your own authorization inside your app.
-
----
-
-## 5. Example: Node.js (jose)
-
-If your target app is Node.js, you can use the same library the Hub uses (**jose**):
-
-```js
-const { jwtVerify } = require('jose');
-
-const SSO_TOKEN_SECRET = process.env.SSO_TOKEN_SECRET; // same value as on the Hub
-
-async function handleHubPost(req, res) {
-  const tokenString = req.body?.token; // from POST body (e.g. express.urlencoded())
-  if (!tokenString) {
-    return res.status(400).send('Missing token');
-  }
-
-  const secret = new TextEncoder().encode(SSO_TOKEN_SECRET);
-  try {
-    const { payload } = await jwtVerify(tokenString, secret);
-    const { user_id, email, exp } = payload;
-    if (!user_id || !email) {
-      return res.status(400).send('Invalid token payload');
-    }
-    // Optional: reject if already expired (jose often does this for you)
-    if (exp && exp < Math.floor(Date.now() / 1000)) {
-      return res.status(401).send('Token expired');
-    }
-    // Log the user in or create/link account; then redirect to your app
-    // e.g. createSession(user_id, email); res.redirect('/dashboard');
-    res.redirect('/dashboard');
-  } catch (err) {
-    return res.status(401).send('Invalid or expired token');
-  }
-}
+```bash
+curl -s https://<hub-host>/api/sso/jwks     # expect {"keys":[{"kty":"RSA", ...}]}
 ```
 
-- **Secret:** Use the same `SSO_TOKEN_SECRET` as the Hub; encode as UTF-8 (e.g. `TextEncoder().encode(SSO_TOKEN_SECRET)` for jose).
+✅ **Run this from your backend server too, not just your laptop** — the backend needs
+this path for the token exchange.
 
 ---
 
-## 6. Example: Other languages / libraries
+## 4. Register your app with the Hub admin
 
-- **Python (PyJWT):** Use `jwt.decode(token, key=SSO_TOKEN_SECRET, algorithms=["HS256"])`. Pass the secret as a string (UTF-8); PyJWT will use it as the HMAC key.
-- **Java (e.g. jjwt):** Verify with algorithm `HS256` and the shared secret as a byte array (UTF-8).
-- **.NET:** Use `JwtSecurityTokenHandler` with `HMACSHA256` and the secret as UTF-8 bytes.
-- **PHP, Go, etc.:** Any JWT library that supports HS256; key = shared secret in UTF-8.
+In the Hub: **Admin → Applications**. You need to agree on three things.
 
-In all cases:
+### 4.1 Redirect URI(s)
 
-1. Verify signature with the **shared secret** (UTF-8).
-2. Use algorithm **HS256** only (the Hub does not issue other algorithms).
-3. Enforce **exp** (reject if `exp` &lt; now).
+This is the URL the Hub sends the browser back to after login. It must point at
+**your backend's callback route**, reachable through your public URL:
+
+```
+https://app.example.com/auth/oidc/callback
+```
+
+Rules learned the hard way:
+
+- It must match your app's configured value **byte-for-byte** (scheme, host, port, path,
+  no trailing slash differences).
+- You may register **several** URIs (e.g. one for an IP-based test, one for the real
+  domain), but **your app sends exactly one** — see step 5.
+- Register the URL that goes through your **reverse proxy / public hostname**, not an
+  internal container port. A static-frontend port (e.g. `:3040`) that doesn't proxy
+  `/auth/*` will 404.
+- HTTP redirect URIs worked for us on an internal domain. Confirm your Hub allows them
+  if you have no TLS.
+
+### 4.2 Client ID
+
+The Hub assigns a `client_id` (e.g. `my-app-name`). It is **not secret** — it appears in
+browser URLs. You will need it in your config.
+
+### 4.3 Client type
+
+Confirm **public client / PKCE**. There is **no client secret** to request.
+
+### What to collect before leaving this step
+
+| Item | Example | Secret? |
+|---|---|---|
+| `client_id` | `my-app-name` | No |
+| Discovery URL | `https://<hub-host>/api/sso/.well-known/openid-configuration` | No |
+| Registered redirect URI | `https://app.example.com/auth/oidc/callback` | No |
 
 ---
 
-## 7. Endpoint contract summary (for your app)
+## 5. Configure your app
 
-| Item | Value |
-|------|--------|
-| Method | `POST` |
-| URL | Your configured target URL (e.g. `https://yourapp.example.com/auth/hub`) |
-| Body | `application/x-www-form-urlencoded` |
-| Body parameter | `token` = JWT string |
-| JWT algorithm | HS256 |
-| JWT claims | `user_id` (UUID), `email`, `iat`, `exp` |
-| Secret | Same as Hub `SSO_TOKEN_SECRET` (UTF-8) |
-| Token lifetime | Default 60 s (Hub: `SSO_TOKEN_EXPIRY_SECONDS`) |
+Our implementation uses these environment variables:
+
+```ini
+# --- DWS Hub OIDC (public client, PKCE — no client secret exists) ---
+OIDC_DISCOVERY_URL=https://<hub-host>/api/sso/.well-known/openid-configuration
+OIDC_CLIENT_ID=my-app-name
+OIDC_REDIRECT_URI=https://app.example.com/auth/oidc/callback
+OIDC_SCOPES=openid email profile
+
+# --- Your app's own session signing key (NOT from the Hub — generate it yourself) ---
+SECRET_KEY=<openssl rand -base64 48>
+
+# --- Where to send the user after a successful login ---
+FRONTEND_URL=https://app.example.com
+
+# --- Cookie mode: see the decision table in step 2 ---
+SESSION_COOKIE_SAMESITE=Lax
+SESSION_COOKIE_SECURE=false
+```
+
+### 🚨 Single-value variables — the #1 source of wasted time
+
+These take **exactly one value**. Comma-joining them produces confusing failures:
+
+| Variable | Wrong | Symptom |
+|---|---|---|
+| `OIDC_REDIRECT_URI` | `http://a/cb,http://b/cb` | `invalid_grant` from the token endpoint |
+| `FRONTEND_URL` | `http://a:3040,http://b` | HTTP **500**, `Port could not be cast to integer value as '3040,http:'` |
+| `API_BASE` (frontend) | `https:http://a:3040` | UI stuck on "Loading…", all API calls fail |
+
+Register multiple redirect URIs **on the Hub**, but configure **one** in your app —
+the one matching the URL users actually visit.
+
+Also beware **leftover placeholders**. We shipped `https://<hub-host>/...` verbatim once
+and got:
+
+```
+Failed to resolve '%3chub-host%3e'      # %3c %3e are URL-encoded < >
+```
+
+### Network paths required
+
+| From → To | Why |
+|---|---|
+| browser → Hub | the `/authorize` redirect and login page |
+| browser → your app | loading the UI and the callback |
+| **your backend → Hub** | **discovery + token exchange + JWKS** (server-to-server) |
+
+Verify the backend path from inside your app's container/host:
+
+```bash
+curl -s -o /dev/null -w '%{http_code}\n' https://<hub-host>/api/sso/.well-known/openid-configuration
+```
 
 ---
 
-## 8. Security checklist (target app)
+## 6. Implement the two routes
 
-- [ ] Obtain `SSO_TOKEN_SECRET` securely; store in env or secrets manager.
-- [ ] Verify the JWT signature before trusting any claim.
-- [ ] Reject tokens with `exp` in the past.
-- [ ] Use HTTPS for the endpoint that receives the POST.
-- [ ] Do not log or expose the raw token or secret.
-- [ ] Map `user_id`/`email` to your own user and session; do not forward the Hub token to browsers unless you have a specific design for it.
+You need exactly two endpoints, both **public** (no login required):
 
-Once your app correctly reads the POST body, verifies the JWT with the shared secret, and enforces expiry, SSO from the Hub to your app will work as intended.
+| Route | Purpose |
+|---|---|
+| `GET /auth/oidc/login` | Start login — redirect the browser to the Hub |
+| `GET /auth/oidc/callback` | Receive the code, get tokens, create the session |
+
+We used **Authlib** (Python), which handles discovery, PKCE, `state`/`nonce`, and
+id_token verification. Any mature OIDC client library works.
+
+### Client registration
+
+```python
+from authlib.integrations.flask_client import OAuth
+
+oauth = OAuth()
+
+def init_oauth(app):
+    oauth.init_app(app)
+    oauth.register(
+        name="dwshub",
+        client_id=config.OIDC_CLIENT_ID,
+        server_metadata_url=config.OIDC_DISCOVERY_URL,   # discovery does the rest
+        client_kwargs={
+            "scope": config.OIDC_SCOPES,
+            "code_challenge_method": "S256",             # PKCE
+        },
+        token_endpoint_auth_method="none",               # public client, no secret
+    )
+```
+
+### Start login
+
+```python
+@auth_bp.route("/oidc/login")
+def oidc_login():
+    return oauth.create_client("dwshub").authorize_redirect(config.OIDC_REDIRECT_URI)
+```
+
+A correct authorize redirect looks like this (verify these params if login misbehaves):
+
+```
+GET https://<hub-host>/api/sso/authorize
+      ?client_id=my-app-name
+      &response_type=code
+      &redirect_uri=https%3A%2F%2Fapp.example.com%2Fauth%2Foidc%2Fcallback
+      &scope=openid+email+profile
+      &code_challenge=<...>&code_challenge_method=S256
+      &state=<...>&nonce=<...>
+```
+
+### Callback
+
+```python
+@auth_bp.route("/oidc/callback")
+def oidc_callback():
+    client = oauth.create_client("dwshub")
+    try:
+        if request.args.get("code_verifier"):        # IdP-initiated — see step 7
+            claims = _idp_initiated_claims(
+                client, request.args.get("code"), request.args.get("code_verifier"))
+        else:                                        # SP-initiated (we started it)
+            token = client.authorize_access_token()
+            claims = token.get("userinfo") or {}
+    except Exception as exc:
+        log.warning("OIDC callback failed: %s: %s", type(exc).__name__, exc)
+        return "SSO login failed", 401
+
+    sub = claims.get("sub")                          # stable user id
+    email = (claims.get("email") or "").strip().lower()
+    if not sub:
+        return "Invalid token payload (no subject)", 400
+
+    login_user_by_subject(str(sub), email)           # your own session logic
+    return redirect(config.FRONTEND_URL, code=303)   # 303 ⇒ browser does a GET
+```
+
+**Use the `sub` claim as the user's primary key**, not the email (emails change).
+Allow at least 255 characters for it in your database.
+
+---
+
+## 7. Handle BOTH login flows (the biggest gotcha)
+
+There are **two ways** users arrive, and a stock OIDC library only handles one.
+
+### 7a. SP-initiated — user starts at your app
+
+Your app → `/auth/oidc/login` → Hub → callback. Your library stored `state`, `nonce`,
+and the PKCE `code_verifier` in the session, so `authorize_access_token()` just works.
+
+### 7b. IdP-initiated — user clicks your app's tile in the Hub dashboard
+
+**Your `/auth/oidc/login` never runs.** The Hub creates the PKCE challenge itself and
+redirects straight to your callback, passing the verifier back to you:
+
+```
+GET /auth/oidc/callback?code=<code>&state=<state>&code_verifier=<verifier>
+```
+
+Because your session has no stored state, the library fails:
+
+```
+authlib.integrations.base_client.errors.MismatchingStateError:
+    mismatching_state: CSRF Warning! State not equal in request and response.
+```
+
+**Fix:** if `code_verifier` is present in the query string, do the exchange manually.
+
+```python
+import requests
+from authlib.jose import jwt as jose_jwt
+
+def _idp_initiated_claims(client, code, code_verifier):
+    meta = client.load_server_metadata()
+
+    # NOTE: JSON body (not form-encoded) — see step 8.
+    resp = requests.post(meta["token_endpoint"], timeout=10, json={
+        "grant_type": "authorization_code",
+        "code": code,
+        "redirect_uri": config.OIDC_REDIRECT_URI,   # required
+        "client_id": config.OIDC_CLIENT_ID,         # public client — no secret
+        "code_verifier": code_verifier,
+    })
+    if resp.status_code != 200:
+        # Surface the OAuth error body — it names the real problem.
+        raise RuntimeError(f"token endpoint {resp.status_code}: {resp.text[:500]}")
+
+    id_token = resp.json().get("id_token")
+    if not id_token:
+        raise RuntimeError("no id_token in token response")
+
+    # Verify the signature against the Hub's public keys + check the claims.
+    jwks = requests.get(meta["jwks_uri"], timeout=10).json()
+    claims = jose_jwt.decode(id_token, jwks, claims_options={
+        "iss": {"essential": True, "values": [meta["issuer"]]},
+        "aud": {"essential": True, "values": [config.OIDC_CLIENT_ID]},
+    })
+    claims.validate()      # enforces exp / iat
+    return claims
+```
+
+> **Security note:** in this flow there is no `state` to check, so the **id_token
+> signature is your trust anchor**. Always verify it against the JWKS and validate
+> `iss`, `aud`, and `exp`. Never skip verification.
+
+---
+
+## 8. The token exchange contract
+
+`POST /api/sso/token`. We determined these requirements empirically — each wrong guess
+returns a different error, which is handy for diagnosis:
+
+| Field | Required | Notes |
+|---|---|---|
+| `grant_type` | ✅ | `authorization_code` |
+| `code` | ✅ | single-use, short-lived |
+| `code_verifier` | ✅ | from the Hub (IdP-initiated) or your session (SP-initiated) |
+| `redirect_uri` | ✅ | **must match exactly**; omitting it ⇒ `invalid_request` |
+| `client_id` | ✅ | public client |
+| `client_secret` | ❌ | does not exist |
+
+### ⚠️ Send a JSON body, not form-encoded
+
+This one is easy to miss because virtually every OAuth tutorial uses form encoding:
+
+```bash
+# ❌ form-encoded → {"error":"unsupported_grant_type"}
+curl -X POST https://<hub-host>/api/sso/token \
+     -d 'grant_type=authorization_code&code=x&code_verifier=y&client_id=z&redirect_uri=...'
+
+# ✅ JSON → works (invalid_grant here only because the code is fake)
+curl -X POST https://<hub-host>/api/sso/token \
+     -H 'Content-Type: application/json' \
+     -d '{"grant_type":"authorization_code","code":"x","code_verifier":"y","client_id":"z","redirect_uri":"..."}'
+```
+
+A successful response contains an **`id_token`** (RS256 JWT). Decode it *after*
+verifying the signature:
+
+| Claim | Meaning |
+|---|---|
+| `sub` | stable user id — **use this as your key** |
+| `email` | user's email |
+| `iss` | must equal the discovery `issuer` |
+| `aud` | must equal your `client_id` |
+| `exp` / `iat` | expiry / issued-at — enforce them |
+
+---
+
+## 9. Verify it works
+
+### Public endpoint checks
+
+```bash
+# Your app is reachable through its public URL:
+curl -s https://app.example.com/api/health
+
+# The login route builds a proper authorize redirect (302 to the Hub):
+curl -si https://app.example.com/auth/oidc/login | egrep 'HTTP/|^location'
+```
+
+In that `location` header confirm: `client_id`, `response_type=code`,
+`code_challenge_method=S256`, `state`, `nonce`, and a `redirect_uri` matching your
+registered value.
+
+### Browser checks (the real test)
+
+1. **SP-initiated:** open your app → click *Sign in with DWS Hub* → authenticate →
+   you land back on your app **logged in**.
+2. **IdP-initiated:** from the Hub dashboard, click your app's tile → same result.
+   **Test this one explicitly** — it exercises the step 7b code path.
+3. In DevTools → Application → Cookies, confirm your session cookie exists for your
+   app's hostname after the redirect. **If it's missing, see step 2 / Appendix A.**
+
+### Server-side confirmation
+
+Your log should show a successful login, e.g.:
+
+```
+INFO auth: OIDC login: user@example.com
+```
+
+---
+
+## 10. Troubleshooting: every error we hit
+
+| Symptom | Cause | Fix |
+|---|---|---|
+| `MismatchingStateError: State not equal in request and response` | IdP-initiated flow (Hub tile); no session state | Implement step 7b (handle `code_verifier`) |
+| `{"error":"unsupported_grant_type"}` | Token request sent **form-encoded** | Send a **JSON** body |
+| `{"error":"invalid_request"}` | `redirect_uri` **missing** from the token request | Include it |
+| `{"error":"invalid_grant"}` | `redirect_uri` doesn't match (often a **comma-joined** value), or code reused/expired | Send exactly one, byte-identical URI; always start from a fresh click |
+| `Failed to resolve '%3chub-host%3e'` | Placeholder `<hub-host>` left in `OIDC_DISCOVERY_URL` | Put the real hostname in |
+| `ConnectionError` / timeout to the Hub | **Backend** can't reach the Hub (only the browser can) | Open network path / DNS from the backend host |
+| HTTP **500**, `Port could not be cast to integer value as '3040,http:'` | `FRONTEND_URL` has **two comma-joined URLs** | Single value |
+| Login succeeds in logs, but browser bounces back to the login page | Session cookie was **dropped** — `Secure=true` over plain HTTP, or split origins on HTTP | `SESSION_COOKIE_SECURE=false` + `SameSite=Lax` **and** single origin (step 2) |
+| Cookie set for an internal IP, not your hostname | Reverse proxy not passing the original host | Add `proxy_set_header Host $host` |
+| UI stuck on "Loading…", API calls fail | Frontend's API base URL malformed (e.g. `https:http://…`) or pointing at an unreachable host | Fix the frontend config to your single origin |
+| nginx logs `499` on the callback, no app log line | Backend **hung** (e.g. stalled database) so the browser gave up | Fix/restart the backend; check DB health |
+| `/auth/oidc/login` returns **404** | OIDC not configured (app gates these routes when config is absent) | Set all three `OIDC_*` variables |
+
+**General debugging tip:** don't let your HTTP client swallow the error body. We were
+stuck on an opaque `400 Bad Request` until we logged `resp.text` — which immediately
+said `unsupported_grant_type`.
+
+---
+
+## 11. Security checklist
+
+- [ ] **Verify the id_token signature** against the Hub's JWKS before trusting any claim.
+- [ ] Validate **`iss`**, **`aud`** (= your `client_id`), and **`exp`**.
+- [ ] Use **PKCE `S256`** (never `plain`).
+- [ ] Use the **`sub`** claim as the user key; treat `email` as a display attribute.
+- [ ] Session cookies: `HttpOnly`, plus the right `SameSite`/`Secure` for your layout.
+- [ ] Prefer **HTTPS everywhere**; if you must run HTTP, keep it internal-only and
+      single-origin, and plan to move to TLS.
+- [ ] Never log the `code`, `code_verifier`, or raw tokens.
+- [ ] Don't ask for or invent a `client_secret` — this is a public client.
+- [ ] Do your **own authorization** after authentication: a valid id_token proves *who*
+      the user is, not *what* they may do.
+- [ ] Generate your app's `SECRET_KEY` yourself; it is unrelated to the Hub.
+
+---
+
+## Appendix A: session cookie rules
+
+| Layout | Scheme | `SameSite` | `Secure` | Works? |
+|---|---|---|---|---|
+| Single origin | HTTP | `Lax` | `false` | ✅ |
+| Single origin | HTTPS | `Lax` | `true` | ✅ |
+| Split origins | HTTPS | `None` | `true` | ✅ (needs CORS with credentials) |
+| Split origins | HTTP | `None` | `true` | ❌ browser rejects `Secure` on HTTP |
+| Split origins | HTTP | `Lax` | `false` | ❌ cookie not sent cross-site |
+
+The last two rows are the trap: login *appears* to succeed (your log shows it) but the
+browser never stores or sends the cookie, so the app bounces the user back to login.
+
+---
+
+## Appendix B: legacy HS256 POST bridge
+
+> **Do not use for new integrations.** Documented for older target apps only.
+
+In this mode the Hub auto-POSTs a short-lived HS256 JWT to your app:
+
+- **Method/URL:** `POST` to your configured target URL. If it doesn't contain `/auth/`,
+  the Hub appends `/auth/hub` (`https://myapp.example.com` → `…/auth/hub`).
+- **Body:** `application/x-www-form-urlencoded`, single field `token=<JWT>`.
+- **Signature:** **HS256** using a **shared secret** (`SSO_TOKEN_SECRET`) that must be
+  identical on the Hub and your app, obtained from the Hub operator over a secure
+  channel (it is never exposed via the Hub UI or API).
+- **Claims:** `user_id` (UUID), `email`, `iat`, `exp`. Default lifetime **60 seconds**.
+
+Verification steps: read `token` from the body → verify the HS256 signature with the
+shared secret → reject if malformed, wrong signature, or `exp` in the past → map
+`user_id`/`email` to a local user and start your own session.
+
+```python
+# Python (PyJWT)
+payload = jwt.decode(token, key=SSO_TOKEN_SECRET, algorithms=["HS256"], leeway=10)
+```
+
+Notes if you maintain such an app:
+- The endpoint receives a **cross-site POST**, so it needs a CSRF exemption; the JWT
+  signature is the authenticity check.
+- Redirect with **303** afterwards so the browser issues a GET carrying the new cookie.
+- Because the token is single-use and short-lived, replay risk is limited — but
+  enforcing a `jti`/replay table is stronger.
+
+**Why we migrated to OIDC:** no shared secret to distribute or rotate, asymmetric
+signatures verified via public JWKS, standard libraries, and support for both
+SP-initiated and IdP-initiated login.
