@@ -5,6 +5,7 @@ Docs/DEPLOY-STAGING.md
 inventory.sql
 # Internal ops findings (IPs, other teams' systems) — keep local.
 Docs/klip-db-cpu-findings.md
+Docs/findings-*.md
 __pycache__/
 *.pyc
 .venv/
