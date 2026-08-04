@@ -170,15 +170,22 @@ def _send_via_smtp(recipients: list, subject: str, html_body: str) -> None:
         ctx.check_hostname = False
         ctx.verify_mode = ssl.CERT_NONE
 
-    if config.SMTP_SECURE:   # implicit SSL (e.g. :465)
+    if config.smtp_use_ssl():   # implicit SSL (e.g. :465)
         with smtplib.SMTP_SSL(config.SMTP_HOST, config.SMTP_PORT,
                               context=ctx, timeout=20) as srv:
             srv.login(config.SMTP_USER, config.SMTP_PASSWORD)
             srv.sendmail(config.SMTP_FROM, recipients, msg.as_string())
-    else:                    # STARTTLS (e.g. :587)
+    else:                       # STARTTLS (e.g. :587), with a plain fallback
         with smtplib.SMTP(config.SMTP_HOST, config.SMTP_PORT, timeout=20) as srv:
             srv.ehlo()
-            srv.starttls(context=ctx)
+            if srv.has_extn("starttls"):
+                srv.starttls(context=ctx)
+                srv.ehlo()
+            else:
+                # Server doesn't offer STARTTLS. Don't hard-fail (that silently
+                # dropped every alert); log it and continue unencrypted.
+                log.warning("SMTP %s:%s does not advertise STARTTLS — sending "
+                            "without encryption", config.SMTP_HOST, config.SMTP_PORT)
             srv.login(config.SMTP_USER, config.SMTP_PASSWORD)
             srv.sendmail(config.SMTP_FROM, recipients, msg.as_string())
 

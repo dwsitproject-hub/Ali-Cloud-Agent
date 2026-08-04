@@ -22,8 +22,28 @@ BASE_DIR = Path(__file__).resolve().parent
 load_dotenv(BASE_DIR.parent / ".env")
 
 
+def _clean(raw: str) -> str:
+    """Strip an inline `# comment` and surrounding whitespace from an env value.
+
+    Docker Compose's ``env_file`` does NOT strip trailing comments, so a line like
+    ``SMTP_SECURE=true   # use SSL`` arrives as the literal string
+    ``"true   # use SSL"``. Without this, such a value silently parses as False —
+    which is exactly how alert emails broke (STARTTLS attempted on an SSL-only
+    port 465, raising SMTPNotSupportedError).
+    """
+    return raw.split("#", 1)[0].strip()
+
+
 def _b(name: str, default: bool) -> bool:
-    return os.getenv(name, str(default)).strip().lower() in ("1", "true", "yes", "on")
+    return _clean(os.getenv(name, str(default))).lower() in ("1", "true", "yes", "on")
+
+
+def _int(name: str, default: int) -> int:
+    """Integer env var, tolerant of inline comments and blanks."""
+    try:
+        return int(_clean(os.getenv(name, str(default))) or default)
+    except ValueError:
+        return default
 
 
 def _host(name: str) -> str:
@@ -53,13 +73,24 @@ ALERT_RECIPIENTS = [
 # SMTP (used when SMTP_HOST is set). SMTP_SECURE=true -> implicit SSL (e.g. 465);
 # false -> STARTTLS (e.g. 587). SMTP_REJECT_UNAUTHORIZED=false skips TLS cert
 # verification (for self-signed internal mail servers).
-SMTP_HOST = os.getenv("SMTP_HOST", "").strip()
-SMTP_PORT = int(os.getenv("SMTP_PORT", "587"))
-SMTP_SECURE = _b("SMTP_SECURE", False)
-SMTP_USER = os.getenv("SMTP_USER", "").strip()
-SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")   # verbatim (may contain symbols)
-SMTP_FROM = (os.getenv("SMTP_FROM", "").strip() or SMTP_USER)
+SMTP_HOST = _clean(os.getenv("SMTP_HOST", ""))
+SMTP_PORT = _int("SMTP_PORT", 587)
+# Port 465 is implicit TLS by convention, so default SMTP_SECURE from the port.
+SMTP_SECURE = _b("SMTP_SECURE", SMTP_PORT == 465)
+SMTP_USER = _clean(os.getenv("SMTP_USER", ""))
+SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")   # verbatim — may contain '#' or spaces
+SMTP_FROM = (_clean(os.getenv("SMTP_FROM", "")) or SMTP_USER)
 SMTP_REJECT_UNAUTHORIZED = _b("SMTP_REJECT_UNAUTHORIZED", True)
+
+
+def smtp_use_ssl() -> bool:
+    """Whether to use implicit SSL (SMTP_SSL) rather than STARTTLS.
+
+    Port 465 is implicit-TLS-only and does NOT offer STARTTLS, so treat it as
+    authoritative even if SMTP_SECURE was mis-set — attempting STARTTLS there
+    raises SMTPNotSupportedError and no mail is ever delivered.
+    """
+    return SMTP_SECURE or SMTP_PORT == 465
 
 
 def smtp_configured() -> bool:
