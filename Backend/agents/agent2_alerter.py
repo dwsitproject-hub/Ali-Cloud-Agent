@@ -175,17 +175,23 @@ def _send_via_smtp(recipients: list, subject: str, html_body: str) -> None:
                               context=ctx, timeout=20) as srv:
             srv.login(config.SMTP_USER, config.SMTP_PASSWORD)
             srv.sendmail(config.SMTP_FROM, recipients, msg.as_string())
-    else:                       # STARTTLS (e.g. :587), with a plain fallback
+    else:                       # STARTTLS (e.g. :587)
         with smtplib.SMTP(config.SMTP_HOST, config.SMTP_PORT, timeout=20) as srv:
             srv.ehlo()
             if srv.has_extn("starttls"):
                 srv.starttls(context=ctx)
                 srv.ehlo()
-            else:
-                # Server doesn't offer STARTTLS. Don't hard-fail (that silently
-                # dropped every alert); log it and continue unencrypted.
+            elif config.SMTP_ALLOW_INSECURE:
                 log.warning("SMTP %s:%s does not advertise STARTTLS — sending "
-                            "without encryption", config.SMTP_HOST, config.SMTP_PORT)
+                            "unencrypted because SMTP_ALLOW_INSECURE=true",
+                            config.SMTP_HOST, config.SMTP_PORT)
+            else:
+                # Never transmit credentials in cleartext by default.
+                raise RuntimeError(
+                    f"{config.SMTP_HOST}:{config.SMTP_PORT} does not advertise "
+                    "STARTTLS, so credentials cannot be sent securely. Use the "
+                    "implicit-TLS port instead (SMTP_PORT=465, SMTP_SECURE=true), "
+                    "or set SMTP_ALLOW_INSECURE=true to accept an unencrypted send.")
             srv.login(config.SMTP_USER, config.SMTP_PASSWORD)
             srv.sendmail(config.SMTP_FROM, recipients, msg.as_string())
 

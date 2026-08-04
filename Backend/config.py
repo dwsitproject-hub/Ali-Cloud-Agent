@@ -81,6 +81,9 @@ SMTP_USER = _clean(os.getenv("SMTP_USER", ""))
 SMTP_PASSWORD = os.getenv("SMTP_PASSWORD", "")   # verbatim — may contain '#' or spaces
 SMTP_FROM = (_clean(os.getenv("SMTP_FROM", "")) or SMTP_USER)
 SMTP_REJECT_UNAUTHORIZED = _b("SMTP_REJECT_UNAUTHORIZED", True)
+# Opt-in escape hatch: allow AUTH over an unencrypted connection when the server
+# offers no STARTTLS. Off by default — credentials must not travel in cleartext.
+SMTP_ALLOW_INSECURE = _b("SMTP_ALLOW_INSECURE", False)
 
 
 def smtp_use_ssl() -> bool:
