@@ -84,6 +84,152 @@ def _services_section(services_down):
     )
 
 
+# --- Diagnosis guidance -----------------------------------------------------
+# Per-breach-type likely causes + the commands that actually diagnose them.
+# Distilled from real incidents on this estate (see Docs/findings-*.md), so the
+# person paged at 2am has the first five minutes of investigation in hand.
+_GUIDANCE = {
+    "CPU": {
+        "causes": [
+            "an unoptimised or runaway database query (by far the most common cause here)",
+            "a recent deploy that changed a query or added a background job",
+            "a retry loop &mdash; an app re-issuing a statement that always fails",
+            "several heavy reports running concurrently on a small instance",
+        ],
+        "cmds": [
+            ("Spike or sustained?", "uptime; sar -u | tail -20"),
+            ("Top consumers", "top -bn1 -o %CPU | head -15"),
+            ("If it is a database host",
+             "ps -C postgres -o pcpu,etime,args --sort=-pcpu | head -10"),
+            ("Live queries (replace &lt;pg&gt;/&lt;db&gt;)",
+             "docker exec &lt;pg&gt; psql -U postgres -d &lt;db&gt; -c \"SELECT pid,state,"
+             "wait_event_type,round(extract(epoch from now()-query_start)) dur_s,"
+             "left(query,200) q FROM pg_stat_activity WHERE state&lt;&gt;'idle' "
+             "ORDER BY dur_s DESC;\""),
+        ],
+    },
+    "Memory": {
+        "causes": [
+            "a query or process with a very large working set",
+            "per-operation DB memory set too high (e.g. PostgreSQL <code>work_mem</code> "
+            "is allocated <em>per sort/hash node</em>, not per connection)",
+            "no swap configured, so there is no cushion before the OOM killer fires",
+            "too many services sharing one undersized host",
+        ],
+        "cmds": [
+            ("Memory and swap headroom", "free -m"),
+            ("Did the OOM killer fire?",
+             "dmesg -T | grep -i 'out of memory' | tail -5"),
+            ("Per-container usage",
+             "docker stats --no-stream --format 'table {{.Name}}\\t{{.MemUsage}}\\t{{.MemPerc}}'"),
+            ("Did a database crash and recover?",
+             "docker logs &lt;pg&gt; --since 1h 2>&amp;1 | grep -iE "
+             "'terminated by signal|recovery mode|not properly shut down'"),
+        ],
+    },
+    "Disk": {
+        "causes": [
+            "log files or container logs growing without rotation",
+            "unused Docker images, volumes and build cache",
+            "database growth or unpruned history tables",
+        ],
+        "cmds": [
+            ("What is full", "df -h"),
+            ("Biggest directories",
+             "du -xh --max-depth=1 / 2>/dev/null | sort -h | tail -10"),
+            ("Docker reclaimable space", "docker system df"),
+        ],
+    },
+    "_services": {
+        "causes": [
+            "the container or service stopped, crashed, or is restarting",
+            "the service is listening on a different port than expected",
+            "a security-group / firewall rule blocks the monitor from reaching it",
+            "the host is overloaded and not accepting new connections",
+        ],
+        "cmds": [
+            ("Is it running?",
+             "docker ps --format 'table {{.Names}}\\t{{.Status}}\\t{{.Ports}}'"),
+            ("Is the port listening?", "ss -tlnp | grep ':&lt;port&gt;'"),
+            ("Why did it stop?", "docker logs &lt;container&gt; --tail 50"),
+            ("Reachable from the monitor host?",
+             "timeout 5 bash -c '</dev/null >/dev/tcp/&lt;host&gt;/&lt;port&gt;' &amp;&amp; echo OK || echo BLOCKED"),
+        ],
+    },
+}
+
+
+def _guidance_block(title: str, spec: dict) -> str:
+    causes = "".join(f"<li style='margin:2px 0'>{c}</li>" for c in spec["causes"])
+    cmds = "".join(
+        f"<div style='margin:6px 0 0'>"
+        f"<div style='font-size:12px;color:#555'>{label}</div>"
+        f"<code style='display:block;background:#f6f8fa;border:1px solid #e1e4e8;"
+        f"border-radius:4px;padding:6px 8px;font-size:11px;white-space:pre-wrap;"
+        f"word-break:break-all;color:#24292e'>{cmd}</code></div>"
+        for label, cmd in spec["cmds"]
+    )
+    return (
+        f"<div style='margin:14px 0 0;padding:12px 14px;background:#fff;"
+        f"border:1px solid #e6e6e6;border-left:3px solid #c0392b;border-radius:4px'>"
+        f"<div style='font-weight:700;font-size:13px;color:#2c3e50'>{title}</div>"
+        f"<div style='font-size:12px;color:#555;margin:6px 0 2px'>Likely causes</div>"
+        f"<ul style='margin:0 0 4px 18px;padding:0;font-size:12px;color:#444'>{causes}</ul>"
+        f"<div style='font-size:12px;color:#555;margin:8px 0 2px'>Diagnose (run on the affected host)</div>"
+        f"{cmds}</div>"
+    )
+
+
+def _diagnosis_section(scan: dict) -> str:
+    """Root-cause guidance for exactly what breached in this scan."""
+    breaches = scan.get("breaches", [])
+    services_down = scan.get("services_down", [])
+    if not breaches and not services_down:
+        return ""
+
+    # Which instances need attention, and which guidance blocks apply.
+    affected, kinds = {}, []
+    for b in breaches:
+        name = b.get("instance_name") or b.get("instance_id") or "-"
+        affected.setdefault(name, set()).add(b.get("label") or "metric")
+        label = b.get("label")
+        if label in _GUIDANCE and label not in kinds:
+            kinds.append(label)
+    for s in services_down:
+        name = s.get("instance_name") or s.get("instance_id") or "-"
+        affected.setdefault(name, set()).add(f"{s.get('name','service')} down")
+    if services_down:
+        kinds.append("_services")
+
+    who = "".join(
+        f"<li style='margin:2px 0'><b>{html.escape(str(n))}</b> &mdash; "
+        f"{html.escape(', '.join(sorted(v)))}</li>"
+        for n, v in affected.items()
+    )
+
+    blocks = "".join(
+        _guidance_block("Service unreachable" if k == "_services"
+                        else f"{k} threshold breached", _GUIDANCE[k])
+        for k in kinds
+    )
+
+    return (
+        "<h3 style='font-size:14px;color:#c0392b;margin:20px 0 6px'>"
+        "How to investigate this</h3>"
+        "<div style='font-size:12px;color:#555;margin:0 0 4px'>Needs attention</div>"
+        f"<ul style='margin:0 0 4px 18px;padding:0;font-size:12px;color:#444'>{who}</ul>"
+        f"{blocks}"
+        "<div style='margin:14px 0 0;padding:10px 12px;background:#fff8e1;"
+        "border:1px solid #ffe0a3;border-radius:4px;font-size:12px;color:#6b5200'>"
+        "<b>Capture evidence before restarting or rebooting.</b> A reboot clears the "
+        "symptom but destroys the running-query and process state that identifies the "
+        "cause &mdash; several past incidents could not be diagnosed for this reason. "
+        "Save the output of the commands above first, then prefer cancelling the single "
+        "offending query or restarting just the one container over rebooting the host."
+        "</div>"
+    )
+
+
 def build_email(scan: dict) -> dict:
     """Return {subject, html_body} for a given scan result document."""
     n_breach = len(scan.get("breaches", []))
@@ -107,6 +253,7 @@ def build_email(scan: dict) -> dict:
 
     metric_rows = _metrics_rows(scan.get("results", []))
     services_html = _services_section(services_down)
+    diagnosis_html = _diagnosis_section(scan)
 
     body = f"""\
 <div style="font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;max-width:680px;margin:auto">
@@ -128,7 +275,8 @@ def build_email(scan: dict) -> dict:
       </thead>
       <tbody>{metric_rows}</tbody>
     </table>
-    <p style="color:#aaa;font-size:11px;margin-bottom:0">Sent by Agent 2 via Alibaba DirectMail.</p>
+    {diagnosis_html}
+    <p style="color:#aaa;font-size:11px;margin-bottom:0">Sent by Cloud Agent Monitoring (Agent 2).</p>
   </div>
 </div>"""
     return {"subject": subject, "html_body": body}
