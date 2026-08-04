@@ -91,6 +91,15 @@ def _maybe_auto_alert(scan: dict) -> None:
 
     log.warning("auto-alert (%s): %s metric breach, %s service down",
                 reason, scan["breach_count"], scan["services_down_count"])
+
+    # Identify WHICH service/query caused it, so the email carries evidence
+    # rather than guesses. Never let a diagnostics failure block the alert.
+    try:
+        import diagnostics
+        scan["diagnostics"] = diagnostics.collect_for_scan(scan)
+    except Exception:
+        log.exception("diagnostics collection failed; sending alert without it")
+
     alert = agent2_alerter.send_alert(scan)
     alert["trigger"] = "auto"
     alert["reason"] = reason if not alert.get("reason") else f"{reason}: {alert['reason']}"

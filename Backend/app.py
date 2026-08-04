@@ -130,6 +130,11 @@ def send_now():
     scan = snap.get("last_scan")
     if not scan:
         scan = scheduler.run_scan_job(auto_alert=False)  # nothing scanned yet
+    try:
+        import diagnostics
+        scan["diagnostics"] = diagnostics.collect_for_scan(scan)
+    except Exception:
+        logging.getLogger("main").exception("diagnostics collection failed")
     alert = agent2_alerter.send_alert(scan)
     alert["trigger"] = "manual"
     state.set_last_alert(alert)

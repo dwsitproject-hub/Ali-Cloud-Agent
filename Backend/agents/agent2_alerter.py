@@ -180,6 +180,43 @@ def _guidance_block(title: str, spec: dict) -> str:
     )
 
 
+def _evidence_section(scan: dict) -> str:
+    """Live on-host evidence: which service/process/query caused the breach.
+
+    Rendered from ``scan['diagnostics']`` (collected over SSH by
+    Backend/diagnostics.py). This is the real culprit, not a guess — so when it
+    is present it appears first and the generic guidance is reduced to a footnote.
+    """
+    diags = scan.get("diagnostics") or {}
+    if not diags:
+        return ""
+
+    blocks = []
+    for name, d in diags.items():
+        blocks.append(
+            "<div style='margin:12px 0 0;padding:12px 14px;background:#fff;"
+            "border:1px solid #e6e6e6;border-left:3px solid #2c7be5;border-radius:4px'>"
+            f"<div style='font-weight:700;font-size:13px;color:#2c3e50'>"
+            f"{html.escape(str(name))} "
+            f"<span style='font-weight:400;color:#888'>&mdash; {html.escape(d.get('host',''))}"
+            f" ({html.escape(d.get('focus','all'))})</span></div>"
+            "<pre style='margin:8px 0 0;background:#0f1419;color:#d7e0ea;"
+            "border-radius:4px;padding:10px;font-size:10.5px;line-height:1.45;"
+            "white-space:pre-wrap;word-break:break-word;overflow-x:auto'>"
+            f"{html.escape(d.get('output',''))}</pre></div>"
+        )
+
+    return (
+        "<h3 style='font-size:14px;color:#2c7be5;margin:20px 0 6px'>"
+        "What caused this &mdash; live evidence from the affected host</h3>"
+        "<div style='font-size:12px;color:#555;margin:0 0 2px'>Captured at alert time "
+        "over SSH. Look for the top process / container by CPU or memory, and for "
+        "database hosts the longest-running query &mdash; that is the activity "
+        "responsible. <b>ELAPSED / secs</b> shows how long it had been running.</div>"
+        + "".join(blocks)
+    )
+
+
 def _diagnosis_section(scan: dict) -> str:
     """Root-cause guidance for exactly what breached in this scan."""
     breaches = scan.get("breaches", [])
@@ -213,9 +250,14 @@ def _diagnosis_section(scan: dict) -> str:
         for k in kinds
     )
 
+    # When live evidence was collected, the guidance is a fallback footnote only.
+    has_evidence = bool(scan.get("diagnostics"))
+    heading = ("Further checks" if has_evidence else "How to investigate this")
+    if has_evidence:
+        blocks = ""      # evidence already names the culprit; don't repeat guesses
+
     return (
-        "<h3 style='font-size:14px;color:#c0392b;margin:20px 0 6px'>"
-        "How to investigate this</h3>"
+        f"<h3 style='font-size:14px;color:#c0392b;margin:20px 0 6px'>{heading}</h3>"
         "<div style='font-size:12px;color:#555;margin:0 0 4px'>Needs attention</div>"
         f"<ul style='margin:0 0 4px 18px;padding:0;font-size:12px;color:#444'>{who}</ul>"
         f"{blocks}"
@@ -253,7 +295,7 @@ def build_email(scan: dict) -> dict:
 
     metric_rows = _metrics_rows(scan.get("results", []))
     services_html = _services_section(services_down)
-    diagnosis_html = _diagnosis_section(scan)
+    diagnosis_html = _evidence_section(scan) + _diagnosis_section(scan)
 
     body = f"""\
 <div style="font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;max-width:680px;margin:auto">

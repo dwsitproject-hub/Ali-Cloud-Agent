@@ -20,6 +20,9 @@ requests==2.32.3        # HTTP transport for Authlib's Flask integration
 # CORS: the standalone frontend calls this API cross-origin with credentials
 Flask-Cors==4.0.1
 
+# SSH: on-breach diagnostics collector (Backend/diagnostics.py)
+paramiko==3.5.0
+
 # Production WSGI server
 gunicorn==23.0.0
 

@@ -14,3 +14,6 @@ metrics.json
 .deps_installed
 .pytest_cache/
 instance/
+
+# SSH key for on-breach diagnostics — never commit private keys.
+secrets/

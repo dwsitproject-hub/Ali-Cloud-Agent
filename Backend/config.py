@@ -120,6 +120,23 @@ SCAN_CONCURRENCY = int(os.getenv("SCAN_CONCURRENCY", "8"))
 ALERT_RENOTIFY_MINUTES = int(os.getenv("ALERT_RENOTIFY_MINUTES", "60"))
 ALERT_ON_RECOVERY = _b("ALERT_ON_RECOVERY", True)
 
+# --- On-breach SSH diagnostics (see Backend/diagnostics.py) -------------------
+# When a metric breaches, SSH to the affected host and run ONE read-only script
+# to identify which service/process/query is responsible; the output is embedded
+# in the alert email. Requires a dedicated unprivileged SSH user + key on each
+# monitored host. See Docs/DIAGNOSTICS-SETUP.md.
+DIAG_ENABLED = _b("DIAG_ENABLED", False)
+DIAG_SSH_USER = _clean(os.getenv("DIAG_SSH_USER", ""))
+DIAG_SSH_KEY = _clean(os.getenv("DIAG_SSH_KEY", ""))       # path inside the container
+DIAG_SSH_PORT = _int("DIAG_SSH_PORT", 22)
+DIAG_REMOTE_SCRIPT = _clean(os.getenv("DIAG_REMOTE_SCRIPT", "/usr/local/bin/cam-diag"))
+DIAG_TIMEOUT = _int("DIAG_TIMEOUT", 20)      # seconds per host
+DIAG_MAX_HOSTS = _int("DIAG_MAX_HOSTS", 3)   # cap per alert, keeps the cycle short
+DIAG_MAX_CHARS = _int("DIAG_MAX_CHARS", 6000)
+# Reject unknown SSH host keys instead of auto-accepting them (stricter; needs
+# the host keys pre-seeded in the container's known_hosts).
+DIAG_STRICT_HOST_KEY = _b("DIAG_STRICT_HOST_KEY", False)
+
 # --- History retention -------------------------------------------------------
 # Scan history is written every cycle and would otherwise grow without bound.
 # Runs (and their child metric/service/alert rows) older than this are pruned
