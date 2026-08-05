@@ -38,14 +38,35 @@ sudo useradd --system --create-home --shell /bin/bash cloudmonitor
 
 ### A2. Install the diagnostic script
 
-Copy `deploy/cam-diag.sh` from the repo onto the host, then:
+The script is `deploy/cam-diag.sh` in this repo. Get it onto the host first —
+**note it is a recent addition, so an existing clone needs a `git pull`.**
+
+**If the repo is checked out on this host** (the usual case):
 
 ```bash
-sudo install -m 0755 -o root -g root cam-diag.sh /usr/local/bin/cam-diag
+cd /opt/ali-cloud-agent
+git pull origin production-refactor
+ls -l deploy/cam-diag.sh                     # confirm the file is present
+sudo install -m 0755 -o root -g root deploy/cam-diag.sh /usr/local/bin/cam-diag
+```
 
-# sanity-check it works and is read-only in effect
+**If it is not**, copy it from the backend server instead:
+
+```bash
+# on the BACKEND server:
+scp /opt/ali-cloud-agent/deploy/cam-diag.sh root@<this-host-ip>:/tmp/
+# then on THIS host:
+sudo install -m 0755 -o root -g root /tmp/cam-diag.sh /usr/local/bin/cam-diag
+```
+
+Then sanity-check it (read-only, changes nothing):
+
+```bash
 sudo /usr/local/bin/cam-diag cpu | head -30
 ```
+
+> `install: cannot stat 'cam-diag.sh'` means you are not in the directory holding
+> the file — use the full `deploy/cam-diag.sh` path from the repo root as above.
 
 ### A3. Allow only that one command via sudo
 
