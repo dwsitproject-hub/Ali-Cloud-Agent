@@ -207,11 +207,37 @@ ssh -i /opt/ali-cloud-agent/secrets/diag_ed25519 -o BatchMode=yes \
 PostgreSQL container and reports live `pg_stat_activity` rows plus recent
 errors/OOM messages, which is what actually names the offending query.
 
-**The backend server is itself a monitored host.** It is both the monitor and a
-target, and it still needs the full Part 2 (user, script, sudoers, key, port 22).
-The app connects from inside its container out to the host's own IP, which works
-normally — just make sure the inventory `host` for that instance is the private IP,
-not `127.0.0.1` (localhost inside the container is the container, not the host).
+**The backend server is itself a monitored host** — and it needs one extra step.
+
+It is both monitor and target, so it needs the full Part 2. Set its inventory `host`
+to the **private IP, not `127.0.0.1`** (inside the container, localhost is the
+container, not the host).
+
+⚠️ **The `from=` restriction needs a second entry on this host.** When the container
+reaches *other* hosts, the traffic leaves the box and is SNAT'd to the backend's own
+IP — so `from="$BACKEND_IP"` matches. But when it connects to the backend's **own**
+IP the traffic never leaves: it is delivered locally over the Docker bridge, so sshd
+sees the **container's** address instead and rejects the key
+(`AuthenticationException: Authentication failed`, even though the same `ssh` command
+works from the host shell).
+
+Add a second `authorized_keys` line scoped to the container subnet — detected
+automatically, so there is nothing to look up:
+
+```bash
+NET=$(docker inspect cloud-agent-app --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}')
+SUBNET=$(docker network inspect "$NET" --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}')
+echo "container network: $NET  subnet: $SUBNET"
+
+printf 'from="%s",no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty %s\n' \
+  "$SUBNET" "$PUBKEY" >> /home/cloudmonitor/.ssh/authorized_keys
+
+wc -l /home/cloudmonitor/.ssh/authorized_keys      # expect 2
+```
+
+The subnet is Docker-internal and not routable from outside the host, so this remains
+least-privilege. Re-running the container-side check should then report `OK` for the
+backend's own IP.
 
 **Frontend / non-database hosts** — everything works except the PostgreSQL
 sections, which are simply omitted when no Postgres container is present. You still
@@ -324,6 +350,7 @@ alert still sends, with the generic guidance as before.
 |---|---|---|
 | no `diagnostics` lines at all | disabled or unset | check `DIAG_ENABLED=true`, `DIAG_SSH_USER`, `DIAG_SSH_KEY` |
 | `AuthenticationException` | key not authorised, or `from=` does not match the backend's source IP | redo 2d; check `authorized_keys` ownership/permissions |
+| `AuthenticationException` **only for the backend's own IP**, while `ssh` works from that host's shell | container→own-host traffic arrives from the Docker bridge, not the host IP, so `from=` fails | add the container-subnet `authorized_keys` line — see "Notes per host type" |
 | `(no output; stderr: sudo: a password is required)` | sudoers entry missing or deleted | redo 2c, run `visudo -c` |
 | `sudo: sorry, you must have a tty` | `requiretty` set in sudoers (rare on Ubuntu) | add `Defaults:cloudmonitor !requiretty` |
 | `timed out` / `NoValidConnectionsError` | port 22 blocked from the backend | add the security-group rule (2f) |
