@@ -92,6 +92,14 @@
 
   <div id="cards"><div class="muted">Loading...</div></div>
 
+  <div class="panel" id="evidencePanel" style="display:none">
+    <h2>What caused this &mdash; live evidence from the affected host</h2>
+    <div class="muted" style="margin-bottom:8px">Captured over SSH at breach time.
+      Look for the top process/container by CPU, the longest-running query, and the
+      <b>calling service</b> resolved from the database client address.</div>
+    <div id="evidenceBody"></div>
+  </div>
+
   <div class="panel">
     <h2>Last alert</h2>
     <div id="alertBox" class="muted">No alert sent yet.</div>
@@ -213,6 +221,24 @@ function applyConfig(cfg){
   $('#autoPill').textContent = 'auto-alert: ' + (cfg.auto_alert_on_breach?'on':'off');
 }
 
+function renderEvidence(diags){
+  const panel = $('#evidencePanel'), body = $('#evidenceBody');
+  const names = diags ? Object.keys(diags) : [];
+  if(!names.length){ panel.style.display='none'; body.innerHTML=''; return; }
+  body.innerHTML = names.map(n=>{
+    const d = diags[n] || {};
+    return `<details style="margin-bottom:8px" open>
+      <summary style="cursor:pointer;font-weight:700;font-size:14px">
+        ${esc(n)} <span class="muted" style="font-weight:400">&mdash; ${esc(d.host||'')} (${esc(d.focus||'all')})</span>
+      </summary>
+      <pre style="margin:8px 0 0;background:#0b0f14;border:1px solid var(--line);
+                  border-radius:6px;padding:10px;font-size:11px;line-height:1.45;
+                  white-space:pre-wrap;word-break:break-word;overflow-x:auto;color:#d7e0ea">${esc(d.output||'')}</pre>
+    </details>`;
+  }).join('');
+  panel.style.display='block';
+}
+
 function renderAlert(a){
   if(!a){ $('#alertBox').textContent='No alert sent yet.'; $('#previewWrap').innerHTML=''; return; }
   const who = (a.recipients||[]).join(', ') || '-';
@@ -246,6 +272,7 @@ async function refresh(){
   const s = await r.json();
   applyConfig(s.config);
   renderCards(s.last_scan); renderAlert(s.last_alert); renderHist(s.history);
+  renderEvidence(s.last_scan && s.last_scan.diagnostics);
 }
 async function scan(){
   $('#scanBtn').disabled=true;

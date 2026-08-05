@@ -66,6 +66,21 @@ if command -v docker >/dev/null 2>&1; then
   timeout 8 docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' 2>/dev/null \
     | head -14 || echo "(docker ps unavailable)"
 
+  # Map container IP -> name once, so a database client address can be resolved
+  # to the service that issued the query (e.g. 172.22.0.3 -> klip-backend).
+  MAPF=$(mktemp 2>/dev/null || echo /tmp/cam-diag-map.$$)
+  timeout 15 docker ps -q 2>/dev/null | head -40 | xargs -r \
+    timeout 15 docker inspect \
+      --format '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}{{.Name}}' \
+      2>/dev/null | sed 's|/||' > "$MAPF" 2>/dev/null || true
+
+  resolve_ip() {   # $1 = ip -> prints container name, or nothing
+    [ -s "$MAPF" ] || return 0
+    awk -v ip="$1" '$0 ~ "(^| )"ip"( |$)" {print $NF; exit}' "$MAPF"
+  }
+
+  CLIENTIPS=""
+
   # --- Databases: which query is responsible --------------------------------
   # For every running PostgreSQL container, report the live non-idle queries.
   # This is what actually names the offending activity.
@@ -85,8 +100,34 @@ if command -v docker >/dev/null 2>&1; then
     if [ -n "${out// /}" ]; then
       hr "ACTIVE QUERIES — container: $c  (db | user | client | state | wait | secs | query)"
       printf '%s\n' "$out"
+      # Remember the client addresses so we can name the calling service below.
+      CLIENTIPS="$CLIENTIPS $(printf '%s\n' "$out" \
+        | awk -F' \\| ' '{gsub(/[ \t]/,"",$3); if ($3!="") print $3}' | sort -u | tr '\n' ' ')"
     fi
   done
+
+  # --- Which SERVICE issued those queries, and what was it doing? -----------
+  CLIENTIPS=$(echo "$CLIENTIPS" | tr ' ' '\n' | sort -u | sed '/^$/d')
+  if [ -n "$CLIENTIPS" ]; then
+    hr "CALLING SERVICE (database client address -> container)"
+    for ip in $CLIENTIPS; do
+      name=$(resolve_ip "$ip")
+      printf '%-18s -> %s\n' "$ip" "${name:-(not a container on this host)}"
+    done
+
+    # Tail the caller's own log — for an HTTP service this is usually where the
+    # request path / endpoint that triggered the query appears.
+    for ip in $CLIENTIPS; do
+      name=$(resolve_ip "$ip")
+      [ -n "$name" ] || continue
+      lg=$(timeout 6 docker logs "$name" --tail 12 2>&1 | tail -12)
+      if [ -n "${lg// /}" ]; then
+        hr "RECENT ACTIVITY in caller: $name (last log lines — look for the API path)"
+        printf '%s\n' "$lg" | cut -c1-220
+      fi
+    done
+  fi
+  rm -f "$MAPF" 2>/dev/null || true
 
   hr "RECENT DATABASE ERRORS / CRASHES"
   for c in $PGLIST; do

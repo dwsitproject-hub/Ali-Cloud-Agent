@@ -97,6 +97,8 @@ def _maybe_auto_alert(scan: dict) -> None:
     try:
         import diagnostics
         scan["diagnostics"] = diagnostics.collect_for_scan(scan)
+        # Persist alongside the scan so the dashboard shows the same evidence.
+        state.attach_diagnostics(scan["diagnostics"])
     except Exception:
         log.exception("diagnostics collection failed; sending alert without it")
 

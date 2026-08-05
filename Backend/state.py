@@ -59,6 +59,23 @@ def set_last_scan(scan: dict) -> None:
     db.session.commit()
 
 
+def attach_diagnostics(diags: dict) -> None:
+    """Store on-breach evidence on the most recent scan run.
+
+    Diagnostics are gathered after the run is persisted (the alert decision comes
+    first), so this updates the row in place. Best-effort: never raise into the
+    scan cycle."""
+    if not diags:
+        return
+    try:
+        latest = ScanRun.query.order_by(ScanRun.id.desc()).first()
+        if latest is not None:
+            latest.diagnostics = diags
+            db.session.commit()
+    except Exception:
+        db.session.rollback()
+
+
 def set_last_alert(alert: dict) -> None:
     """Persist an alert send summary, linked to the most recent scan run."""
     latest = ScanRun.query.order_by(ScanRun.id.desc()).first()
@@ -113,6 +130,8 @@ def _scan_run_to_dict(run: ScanRun) -> dict:
         "services_down": [s for s in services if s["up"] is False],
         "services_down_count": run.services_down_count,
         "services_total": run.services_total,
+        # On-breach SSH evidence, so the dashboard can show what the email shows.
+        "diagnostics": run.diagnostics or {},
     }
 
 
