@@ -92,9 +92,16 @@ useradd --system --create-home --shell /bin/bash cloudmonitor
 
 ### 2b. Install the diagnostic script
 
-**Use option 1 if `/opt/ali-cloud-agent` exists on this host** (it does on the
-backend and DB servers). Only use option 2 if the repo is absent. **Do not run
-both.**
+**Check first, then pick ONE option — do not run both:**
+
+```bash
+ls -d /opt/ali-cloud-agent 2>/dev/null && echo "repo present -> use Option 1" \
+                                       || echo "no repo -> use Option 2"
+```
+
+If you deployed with the split compose files (`docker-compose.{db,app,fe}.yml`),
+**every** server has a checkout — frontend included — so Option 1 is the normal
+path on all of them. Option 2 exists only for a host with no checkout at all.
 
 **Option 1 — repo present on this host:**
 
@@ -105,16 +112,20 @@ ls -l deploy/cam-diag.sh                     # confirm the file is present
 install -m 0755 -o root -g root deploy/cam-diag.sh /usr/local/bin/cam-diag
 ```
 
-**Option 2 — no repo here** (e.g. the frontend host). Copy it over from the backend
-server, which has it:
+**Option 2 — no repo on this host.** Copy the script over from the backend server.
+Note the first command runs on the **backend**, the second on the target host:
 
 ```bash
-# run on the BACKEND server (HOST_IP = the host you are provisioning):
+# 1) on the BACKEND server — set HOST_IP to the host you are provisioning:
+HOST_IP='10.0.0.56'
 scp /opt/ali-cloud-agent/deploy/cam-diag.sh root@"$HOST_IP":/tmp/
 
-# then on THAT host:
+# 2) then on THAT host:
 install -m 0755 -o root -g root /tmp/cam-diag.sh /usr/local/bin/cam-diag
 ```
+
+> `Could not resolve hostname :` means `HOST_IP` was empty — set it first, and make
+> sure you are running the `scp` on the **backend** server, not the target.
 
 Either way, confirm and sanity-check (read-only, changes nothing):
 
