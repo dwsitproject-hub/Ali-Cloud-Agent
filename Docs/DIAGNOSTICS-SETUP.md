@@ -70,6 +70,20 @@ The private key never leaves the backend server. `secrets/` is git-ignored.
 Run these on the host you are adding. Commands assume you are **root** (drop the
 `sudo` if so).
 
+### 2·0. Set these three variables first
+
+Paste this once per shell session, with your real values. Every command below uses
+them, so there are **no placeholders left to hand-edit**:
+
+```bash
+BACKEND_IP='10.0.0.57'                                        # the backend server's private IP
+HOST_IP='10.0.0.60'                                           # the host you are provisioning
+PUBKEY='ssh-ed25519 AAAA...replace-with-Part-1-output... cloud-agent-diag'
+```
+
+> ⚠️ Never paste `<SOMETHING>` into a shell — bash reads `<` as an input redirect
+> and fails with `No such file or directory`. That is why these are variables.
+
 ### 2a. Create the unprivileged user
 
 ```bash
@@ -78,7 +92,11 @@ useradd --system --create-home --shell /bin/bash cloudmonitor
 
 ### 2b. Install the diagnostic script
 
-**If the repo is checked out on this host:**
+**Use option 1 if `/opt/ali-cloud-agent` exists on this host** (it does on the
+backend and DB servers). Only use option 2 if the repo is absent. **Do not run
+both.**
+
+**Option 1 — repo present on this host:**
 
 ```bash
 cd /opt/ali-cloud-agent
@@ -87,18 +105,21 @@ ls -l deploy/cam-diag.sh                     # confirm the file is present
 install -m 0755 -o root -g root deploy/cam-diag.sh /usr/local/bin/cam-diag
 ```
 
-**If it is not** (e.g. the frontend host), copy it from the backend server:
+**Option 2 — no repo here** (e.g. the frontend host). Copy it over from the backend
+server, which has it:
 
 ```bash
-# on the BACKEND server:
-scp /opt/ali-cloud-agent/deploy/cam-diag.sh root@<HOST_IP>:/tmp/
-# then on THIS host:
+# run on the BACKEND server (HOST_IP = the host you are provisioning):
+scp /opt/ali-cloud-agent/deploy/cam-diag.sh root@"$HOST_IP":/tmp/
+
+# then on THAT host:
 install -m 0755 -o root -g root /tmp/cam-diag.sh /usr/local/bin/cam-diag
 ```
 
-Sanity-check it (read-only, changes nothing):
+Either way, confirm and sanity-check (read-only, changes nothing):
 
 ```bash
+ls -l /usr/local/bin/cam-diag
 /usr/local/bin/cam-diag cpu | head -30
 ```
 
@@ -123,17 +144,20 @@ visudo -c | tail -3
 
 ### 2d. Authorise the monitor's key
 
-Paste the **public** key from Part 1 in place of `ssh-ed25519 AAAA... cloud-agent-diag`
-below. The `from=` restriction makes the key usable *only* from the backend server:
+Uses `$PUBKEY` and `$BACKEND_IP` from step 2·0. The `from=` restriction makes the
+key usable *only* from the backend server:
 
 ```bash
 install -d -m 700 -o cloudmonitor -g cloudmonitor /home/cloudmonitor/.ssh
 
-printf '%s\n' 'from="<BACKEND_IP>",no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty ssh-ed25519 AAAA... cloud-agent-diag' \
-  >> /home/cloudmonitor/.ssh/authorized_keys
+printf 'from="%s",no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty %s\n' \
+  "$BACKEND_IP" "$PUBKEY" >> /home/cloudmonitor/.ssh/authorized_keys
 
 chown cloudmonitor:cloudmonitor /home/cloudmonitor/.ssh/authorized_keys
 chmod 600 /home/cloudmonitor/.ssh/authorized_keys
+
+# verify the line looks right (one line, starts with from=, ends with the comment)
+tail -1 /home/cloudmonitor/.ssh/authorized_keys
 ```
 
 `no-pty` is safe: the app uses an SSH *exec* channel, not an interactive shell.
@@ -149,16 +173,19 @@ Expect `== HOST ==` / `== CPU SNAPSHOT ==`. *"sudo: a password is required"* mea
 
 ### 2f. Network
 
-Allow **`<BACKEND_IP>` → this host `:22`** in the security group.
+Allow **the backend server's IP → this host `:22`** in the security group.
 
 ### 2g. Confirm from the backend server
 
-This exercises the exact path the app uses (SSH → sudo → script):
+Run this **on the backend server** (set `HOST_IP` there too — see 2·0). It
+exercises the exact path the app uses: SSH → sudo → script.
 
 ```bash
+HOST_IP='10.0.0.60'      # the host you just provisioned
+
 ssh -i /opt/ali-cloud-agent/secrets/diag_ed25519 -o BatchMode=yes \
     -o StrictHostKeyChecking=accept-new \
-    cloudmonitor@<HOST_IP> 'sudo -n /usr/local/bin/cam-diag cpu' | head -10
+    cloudmonitor@"$HOST_IP" 'sudo -n /usr/local/bin/cam-diag cpu' | head -10
 ```
 
 ---
