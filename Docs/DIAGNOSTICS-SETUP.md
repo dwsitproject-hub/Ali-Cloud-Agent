@@ -70,14 +70,19 @@ sudo /usr/local/bin/cam-diag cpu | head -30
 
 ### A3. Allow only that one command via sudo
 
+As root (plain redirection — a piped `tee` can be mangled by web terminals):
+
 ```bash
-echo 'cloudmonitor ALL=(root) NOPASSWD: /usr/local/bin/cam-diag' \
-  | sudo tee /etc/sudoers.d/cloudmonitor-diag
-sudo chmod 0440 /etc/sudoers.d/cloudmonitor-diag
-sudo visudo -c        # must report "parsed OK"
+printf 'cloudmonitor ALL=(root) NOPASSWD: /usr/local/bin/cam-diag\n' > /etc/sudoers.d/cloudmonitor-diag
+chmod 0440 /etc/sudoers.d/cloudmonitor-diag
+visudo -c | tail -3
 ```
 
-> `visudo -c` is important — a malformed sudoers file can lock out sudo entirely.
+`visudo -c` must list `/etc/sudoers.d/cloudmonitor-diag: parsed OK`.
+
+> **Only if `visudo -c` reports an error** for that file, delete it immediately so
+> `sudo` is not left broken — `rm -f /etc/sudoers.d/cloudmonitor-diag` — then retry.
+> If it parsed OK, do **not** delete it; that is the entry the monitor needs.
 
 ### A4. Authorise the monitor's SSH key
 
@@ -133,13 +138,17 @@ The private key stays on the backend server only. `secrets/` is git-ignored.
 
 ### B2. Mount the key into the container
 
-The app runs in Docker, so the key must be visible inside it. Add to the `app`
-service in `docker-compose.app.yml`:
+**Already done in the repo** — `docker-compose.app.yml` mounts the secrets
+directory read-only, so the key generated in B1 appears inside the container at
+`/run/secrets/diag_ed25519`:
 
 ```yaml
     volumes:
-      - ./secrets/diag_ed25519:/run/secrets/diag_ed25519:ro
+      - ./secrets:/run/secrets:ro
 ```
+
+Nothing to edit on the server; the `git pull` in B5 picks it up. (The directory is
+mounted rather than the single file so this stays harmless before a key exists.)
 
 ### B3. Configure the app
 

@@ -35,6 +35,12 @@ services:
       # host:container. Shared box? Override APP_HOST_PORT to avoid a clash on 5000
       # (check first: sudo ss -tlnp | grep ':5000 '). The TLS proxy/SLB forwards here.
       - "${APP_HOST_PORT:-5000}:5000"
+    volumes:
+      # Read-only secrets (currently the on-breach diagnostics SSH key, see
+      # Docs/DIAGNOSTICS-SETUP.md). Mounting the directory rather than a single
+      # file keeps this harmless when no key has been generated yet; the feature
+      # is off unless DIAG_ENABLED=true. ./secrets is git-ignored.
+      - ./secrets:/run/secrets:ro
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request,sys; sys.exit(0 if urllib.request.urlopen('http://localhost:5000/api/ready', timeout=5).status==200 else 1)\""]
       interval: 30s
