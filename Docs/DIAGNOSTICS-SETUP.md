@@ -267,10 +267,12 @@ host is skipped silently.
 ### 3e. Verify end-to-end
 
 ```bash
+HOST_IP='10.0.0.60'      # a host you have provisioned
+
 docker exec cloud-agent-app python -c "
 import diagnostics as d
 print('enabled:', d.enabled())
-out = d._run_remote('<HOST_IP>', 'cpu')
+out = d._run_remote('$HOST_IP', 'cpu')
 print(out[:400] if out else 'FAILED - see docker logs cloud-agent-app')"
 ```
 
