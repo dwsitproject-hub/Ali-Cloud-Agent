@@ -253,18 +253,28 @@ METRIC_TEMPLATES = [
 #   type "http" -> GET scheme://host:port`path` returns a status in `expect`
 # These map to the containers/services each box runs (the docker service's
 # published port). Refine ports/paths to match your actual setup.
+# Ports below are overridable per role via env so a probe can be corrected without
+# a code change; the defaults match this estate (Postgres not MySQL, the API on
+# APP_HOST_PORT, and no TLS on the frontend yet).
 SERVICE_CHECKS_BY_ROLE = {
     "db": [
-        {"name": "MySQL", "type": "tcp", "port": 3306},
+        {"name": "PostgreSQL", "type": "tcp", "port": _int("PROBE_DB_PORT", 5433)},
         {"name": "SSH", "type": "tcp", "port": 22},
     ],
     "frontend": [
-        {"name": "HTTP", "type": "http", "scheme": "http", "port": 80, "path": "/", "expect": [200, 301, 302]},
-        {"name": "HTTPS", "type": "http", "scheme": "https", "port": 443, "path": "/", "expect": [200, 301, 302]},
+        {"name": "HTTP", "type": "http", "scheme": "http",
+         "port": _int("PROBE_FE_HTTP_PORT", 80), "path": "/", "expect": [200, 301, 302]},
+        # No HTTPS check by default — staging is HTTP-only, so a 443 probe would
+        # report a false outage. Set PROBE_FE_HTTPS=true once TLS is in place.
+        *([{"name": "HTTPS", "type": "http", "scheme": "https", "port": 443,
+            "path": "/", "expect": [200, 301, 302]}] if _b("PROBE_FE_HTTPS", False) else []),
         {"name": "SSH", "type": "tcp", "port": 22},
     ],
     "backend": [
-        {"name": "API", "type": "http", "scheme": "http", "port": 8080, "path": "/health", "expect": [200, 204]},
+        {"name": "API", "type": "http", "scheme": "http",
+         "port": _int("PROBE_BE_API_PORT", 5050),
+         "path": os.getenv("PROBE_BE_API_PATH", "/api/health").strip() or "/api/health",
+         "expect": [200, 204]},
         {"name": "SSH", "type": "tcp", "port": 22},
     ],
     "web": [
