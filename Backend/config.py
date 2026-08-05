@@ -130,7 +130,10 @@ DIAG_SSH_USER = _clean(os.getenv("DIAG_SSH_USER", ""))
 DIAG_SSH_KEY = _clean(os.getenv("DIAG_SSH_KEY", ""))       # path inside the container
 DIAG_SSH_PORT = _int("DIAG_SSH_PORT", 22)
 DIAG_REMOTE_SCRIPT = _clean(os.getenv("DIAG_REMOTE_SCRIPT", "/usr/local/bin/cam-diag"))
-DIAG_TIMEOUT = _int("DIAG_TIMEOUT", 20)      # seconds per host
+# Seconds per host. The remote script inspects several containers (and each
+# PostgreSQL instance's live queries), so a "focus=all" run on a busy box needs
+# more than a few seconds — too low and evidence is silently dropped from alerts.
+DIAG_TIMEOUT = _int("DIAG_TIMEOUT", 45)
 DIAG_MAX_HOSTS = _int("DIAG_MAX_HOSTS", 3)   # cap per alert, keeps the cycle short
 DIAG_MAX_CHARS = _int("DIAG_MAX_CHARS", 6000)
 # Reject unknown SSH host keys instead of auto-accepting them (stricter; needs
