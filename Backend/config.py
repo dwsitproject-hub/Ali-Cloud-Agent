@@ -271,10 +271,16 @@ SERVICE_CHECKS_BY_ROLE = {
         {"name": "SSH", "type": "tcp", "port": 22},
     ],
     "backend": [
-        {"name": "API", "type": "http", "scheme": "http",
-         "port": _int("PROBE_BE_API_PORT", 5050),
-         "path": os.getenv("PROBE_BE_API_PATH", "/api/health").strip() or "/api/health",
-         "expect": [200, 204]},
+        # The monitor cannot usually probe a published port on its OWN host: the
+        # packet would have to hairpin back into the same container, which Docker's
+        # bridge does not route (especially when published to a specific IP). That
+        # yields a false "API down" for the box the monitor runs on, so this probe
+        # is opt-out via PROBE_BE_API=false. The app's own health is already covered
+        # by /api/ready, and a dead app would produce no scans at all.
+        *([{"name": "API", "type": "http", "scheme": "http",
+            "port": _int("PROBE_BE_API_PORT", 5050),
+            "path": os.getenv("PROBE_BE_API_PATH", "/api/health").strip() or "/api/health",
+            "expect": [200, 204]}] if _b("PROBE_BE_API", True) else []),
         {"name": "SSH", "type": "tcp", "port": 22},
     ],
     "web": [
