@@ -92,6 +92,9 @@ class ScanRun(db.Model):
     breach_count = db.Column(db.Integer, default=0, nullable=False)
     services_total = db.Column(db.Integer, default=0, nullable=False)
     services_down_count = db.Column(db.Integer, default=0, nullable=False)
+    # On-breach SSH evidence: {instance_name: {host, focus, output}} — see
+    # diagnostics.py. Attached after the run is written, so it may be null.
+    diagnostics = db.Column(db.JSON)
     created_at = db.Column(db.DateTime(timezone=True), default=_utcnow, nullable=False, index=True)
 
     metric_results = db.relationship(

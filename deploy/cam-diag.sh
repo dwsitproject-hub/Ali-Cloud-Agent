@@ -18,6 +18,7 @@ FOCUS="${1:-all}"
 case "$FOCUS" in cpu|memory|disk|service|all) ;; *) FOCUS=all ;; esac
 
 MAXQ=${CAM_DIAG_MAX_QUERIES:-5}     # live queries reported per database
+MAXPG=${CAM_DIAG_MAX_PG:-4}         # PostgreSQL containers inspected (keeps runtime bounded)
 hr() { printf '\n== %s ==\n' "$1"; }
 
 hr "HOST"
@@ -65,13 +66,31 @@ if command -v docker >/dev/null 2>&1; then
   timeout 8 docker ps --format 'table {{.Names}}\t{{.Status}}\t{{.Ports}}' 2>/dev/null \
     | head -14 || echo "(docker ps unavailable)"
 
+  # Map container IP -> name once, so a database client address can be resolved
+  # to the service that issued the query (e.g. 172.22.0.3 -> klip-backend).
+  MAPF=$(mktemp 2>/dev/null || echo /tmp/cam-diag-map.$$)
+  timeout 15 docker ps -q 2>/dev/null | head -40 | xargs -r \
+    timeout 15 docker inspect \
+      --format '{{range .NetworkSettings.Networks}}{{.IPAddress}} {{end}}{{.Name}}' \
+      2>/dev/null | sed 's|/||' > "$MAPF" 2>/dev/null || true
+
+  resolve_ip() {   # $1 = ip -> prints container name, or nothing
+    [ -s "$MAPF" ] || return 0
+    awk -v ip="$1" '$0 ~ "(^| )"ip"( |$)" {print $NF; exit}' "$MAPF"
+  }
+
+  CLIENTIPS=""
+
   # --- Databases: which query is responsible --------------------------------
   # For every running PostgreSQL container, report the live non-idle queries.
   # This is what actually names the offending activity.
   PGC=$(timeout 8 docker ps --filter ancestor=postgres --format '{{.Names}}' 2>/dev/null)
   PGC="$PGC $(timeout 8 docker ps --format '{{.Names}}' 2>/dev/null | grep -iE 'postgres|pg' || true)"
-  for c in $(echo "$PGC" | tr ' ' '\n' | sort -u | sed '/^$/d'); do
-    out=$(timeout 12 docker exec "$c" psql -U postgres -X -q -A -F ' | ' -t -c \
+  # Cap the list: hosts here run several Postgres instances and the whole script
+  # must finish inside the caller's DIAG_TIMEOUT.
+  PGLIST=$(echo "$PGC" | tr ' ' '\n' | sort -u | sed '/^$/d' | head -"$MAXPG")
+  for c in $PGLIST; do
+    out=$(timeout 6 docker exec "$c" psql -U postgres -X -q -A -F ' | ' -t -c \
       "SELECT datname, usename, client_addr, state, wait_event_type,
               round(extract(epoch from now()-query_start)) AS dur_s,
               left(regexp_replace(query,'\s+',' ','g'),240)
@@ -81,12 +100,38 @@ if command -v docker >/dev/null 2>&1; then
     if [ -n "${out// /}" ]; then
       hr "ACTIVE QUERIES — container: $c  (db | user | client | state | wait | secs | query)"
       printf '%s\n' "$out"
+      # Remember the client addresses so we can name the calling service below.
+      CLIENTIPS="$CLIENTIPS $(printf '%s\n' "$out" \
+        | awk -F' \\| ' '{gsub(/[ \t]/,"",$3); if ($3!="") print $3}' | sort -u | tr '\n' ' ')"
     fi
   done
 
+  # --- Which SERVICE issued those queries, and what was it doing? -----------
+  CLIENTIPS=$(echo "$CLIENTIPS" | tr ' ' '\n' | sort -u | sed '/^$/d')
+  if [ -n "$CLIENTIPS" ]; then
+    hr "CALLING SERVICE (database client address -> container)"
+    for ip in $CLIENTIPS; do
+      name=$(resolve_ip "$ip")
+      printf '%-18s -> %s\n' "$ip" "${name:-(not a container on this host)}"
+    done
+
+    # Tail the caller's own log — for an HTTP service this is usually where the
+    # request path / endpoint that triggered the query appears.
+    for ip in $CLIENTIPS; do
+      name=$(resolve_ip "$ip")
+      [ -n "$name" ] || continue
+      lg=$(timeout 6 docker logs "$name" --tail 12 2>&1 | tail -12)
+      if [ -n "${lg// /}" ]; then
+        hr "RECENT ACTIVITY in caller: $name (last log lines — look for the API path)"
+        printf '%s\n' "$lg" | cut -c1-220
+      fi
+    done
+  fi
+  rm -f "$MAPF" 2>/dev/null || true
+
   hr "RECENT DATABASE ERRORS / CRASHES"
-  for c in $(echo "$PGC" | tr ' ' '\n' | sort -u | sed '/^$/d'); do
-    errs=$(timeout 10 docker logs "$c" --since 30m 2>&1 \
+  for c in $PGLIST; do
+    errs=$(timeout 5 docker logs "$c" --since 30m 2>&1 \
       | grep -iE 'ERROR|FATAL|terminated by signal|recovery mode|out of memory' \
       | tail -4)
     [ -n "$errs" ] && { printf -- '-- %s --\n' "$c"; printf '%s\n' "$errs"; }

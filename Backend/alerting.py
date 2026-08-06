@@ -21,33 +21,68 @@ from __future__ import annotations
 from datetime import datetime
 
 
+#: Decisions that told someone about a problem (so a recovery is worth sending).
+_PROBLEM_REASONS = ("new", "ongoing", "renotify")
+
+
 def decide(
-    current_keys,
-    prev_keys,
-    last_auto_alert_at: datetime | None,
+    recent_key_sets,
+    last_alert,
     now: datetime,
     renotify_minutes: int,
     alert_on_recovery: bool,
+    confirm_scans: int = 2,
 ) -> str | None:
     """Return an alert reason string, or None to stay silent this cycle.
 
-    ``current_keys`` / ``prev_keys`` are sets of problem identifiers (breached
-    metric keys + down service keys) for this cycle and the one before it.
+    ``recent_key_sets`` holds the problem-key sets (breached metrics + down
+    services) for the most recent scans, **newest first** — supply at least
+    ``confirm_scans + 1`` of them.
+
+    A problem must appear in ``confirm_scans`` consecutive scans before it counts
+    as real. That is the flap guard: a metric oscillating across its threshold
+    would otherwise emit a "new" + "recovered" pair on every cycle. With the
+    default of 2 and a 5-minute interval, a breach must hold for ~10 minutes
+    before anyone is emailed, and must be clear for ~10 minutes to count as
+    recovered.
     """
-    current = set(current_keys)
-    prev = set(prev_keys)
+    sets = [set(s) for s in (recent_key_sets or [])]
+    confirm = max(1, int(confirm_scans))
+    if len(sets) < confirm:
+        return None                     # not enough history to confirm anything
 
-    if not current:
-        return "recovered" if (prev and alert_on_recovery) else None
+    last_at, last_reason = last_alert if last_alert else (None, None)
+    # Stored reasons look like "new" or "new: <transport error>" — take the verb.
+    last_decision = (last_reason or "").split(":", 1)[0].strip().lower()
 
-    # Any brand-new problem is always worth an immediate alert.
-    if current - prev:
+    window = sets[0:confirm]
+    sustained = set.intersection(*window)   # present in EVERY recent scan
+    any_recent = set.union(*window)         # present in ANY recent scan
+
+    if not any_recent:
+        # Nothing wrong at all for `confirm` consecutive scans => confirmed clear.
+        # Only worth an email if we actually announced a problem earlier.
+        if alert_on_recovery and last_decision in _PROBLEM_REASONS:
+            return "recovered"
+        return None
+
+    if not sustained:
+        # Something is crossing the threshold intermittently but nothing has held
+        # for `confirm` scans. This is the flapping case — stay silent.
+        return None
+
+    prev_window = sets[1:confirm + 1]
+    prev_sustained = (set.intersection(*prev_window)
+                      if len(prev_window) == confirm else set())
+
+    # A newly sustained problem is worth an immediate alert.
+    if sustained - prev_sustained:
         return "new"
 
-    # Same (or a subset of the) problems as last cycle: only a periodic reminder.
-    if last_auto_alert_at is None:
+    # Same sustained problems as before: only a periodic reminder.
+    if last_at is None:
         return "ongoing"
-    elapsed_min = (now - last_auto_alert_at).total_seconds() / 60.0
+    elapsed_min = (now - last_at).total_seconds() / 60.0
     if elapsed_min >= renotify_minutes:
         return "renotify"
     return None

@@ -6,7 +6,29 @@ read-only script, and embeds the result in the alert email — so the mail tells
 **which container/process** was responsible and **what activity** it was doing
 (including the actual SQL and how long it had been running).
 
-Do **Part A on every monitored host**, then **Part B once on the backend server**.
+**Deploy branch: `UAT`** (the repository's default branch).
+
+## Do it in this order
+
+| Part | Where | Repeat? |
+|---|---|---|
+| **Part 1 — generate the key** | backend server | once |
+| **Part 2 — provision the host** | *each* monitored host | per host |
+| **Part 3 — wire up the app** | backend server | once |
+
+> Part 2 needs the public key produced in Part 1, so **do Part 1 first**.
+
+### Progress tracker
+
+Fill this in as you go — the key from Part 1 is the same for every host:
+
+| Host | Role | 2a user | 2b script | 2c sudoers | 2d key | 2e verify | 2f port 22 |
+|---|---|---|---|---|---|---|---|
+| DB Staging | database | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ |
+| Backend Staging | app + monitor | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
+| Frontend Staging | web | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
+
+(Actual IPs for this estate are in the internal staging runbook, not in this repo.)
 
 ---
 
@@ -14,89 +36,19 @@ Do **Part A on every monitored host**, then **Part B once on the backend server*
 
 | Property | How it is enforced |
 |---|---|
-| The monitor logs in as an **unprivileged user** | dedicated `cloudmonitor` account, no shell login needed beyond running the script |
+| The monitor logs in as an **unprivileged user** | dedicated `cloudmonitor` account |
 | It can run **exactly one command** | a sudoers entry whitelisting only `/usr/local/bin/cam-diag` |
 | It is **not** in the `docker` group | that group is root-equivalent; the single sudo entry is narrower |
-| The script is **read-only** | inspects processes/containers/queries; changes nothing. It is plain bash — review it before installing |
+| The key only works from one source | `from="<BACKEND_IP>"` restriction in `authorized_keys` |
+| The script is **read-only** | inspects processes/containers/queries; changes nothing. Plain bash — review it before installing |
 | No app data reaches a shell | the only argument is a keyword validated against a fixed allow-list (`cpu`/`memory`/`disk`/`service`/`all`) |
-| Failures are contained | hard timeouts, max 3 hosts per alert, and any error just means the alert falls back to generic guidance |
+| Failures are contained | hard timeouts, max 3 hosts per alert; any error just means the alert falls back to generic guidance |
 
-The script lives at **`deploy/cam-diag.sh`** in this repo. Have each host owner read it.
-
----
-
-# Part A — on each monitored host
-
-Repeat for every server you want evidence from (start with the DB host — that is
-where all incidents so far originated).
-
-### A1. Create the unprivileged user
-
-```bash
-sudo useradd --system --create-home --shell /bin/bash cloudmonitor
-```
-
-### A2. Install the diagnostic script
-
-Copy `deploy/cam-diag.sh` from the repo onto the host, then:
-
-```bash
-sudo install -m 0755 -o root -g root cam-diag.sh /usr/local/bin/cam-diag
-
-# sanity-check it works and is read-only in effect
-sudo /usr/local/bin/cam-diag cpu | head -30
-```
-
-### A3. Allow only that one command via sudo
-
-```bash
-echo 'cloudmonitor ALL=(root) NOPASSWD: /usr/local/bin/cam-diag' \
-  | sudo tee /etc/sudoers.d/cloudmonitor-diag
-sudo chmod 0440 /etc/sudoers.d/cloudmonitor-diag
-sudo visudo -c        # must report "parsed OK"
-```
-
-> `visudo -c` is important — a malformed sudoers file can lock out sudo entirely.
-
-### A4. Authorise the monitor's SSH key
-
-You will generate the key **once** in step B1. Once you have its public key,
-on each host:
-
-```bash
-sudo -u cloudmonitor mkdir -p /home/cloudmonitor/.ssh
-sudo -u cloudmonitor tee -a /home/cloudmonitor/.ssh/authorized_keys <<'EOF'
-<paste the PUBLIC key from step B1 here>
-EOF
-sudo -u cloudmonitor chmod 700 /home/cloudmonitor/.ssh
-sudo -u cloudmonitor chmod 600 /home/cloudmonitor/.ssh/authorized_keys
-```
-
-**Optional hardening** — prefix the key line with source restrictions so it is
-only usable from the backend server and cannot forward ports:
-
-```
-from="<backend-server-private-ip>",no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty ssh-ed25519 AAAA... cloud-agent-diag
-```
-
-### A5. Verify locally
-
-```bash
-sudo -u cloudmonitor sudo -n /usr/local/bin/cam-diag cpu | head -20
-```
-Expect the diagnostic output. If you see *"sudo: a password is required"*, step A3
-did not apply.
-
-### A6. Network
-
-The backend server must reach this host on **port 22**. Add a security-group rule
-allowing `<backend-server-private-ip>` → this host `:22`.
+The script is **`deploy/cam-diag.sh`** in this repo. Have each host owner read it.
 
 ---
 
-# Part B — once, on the backend server
-
-### B1. Generate the monitor's SSH key
+# Part 1 — generate the monitor's key (backend server, once)
 
 ```bash
 sudo mkdir -p /opt/ali-cloud-agent/secrets
@@ -104,65 +56,266 @@ sudo ssh-keygen -t ed25519 -N '' -C 'cloud-agent-diag' \
      -f /opt/ali-cloud-agent/secrets/diag_ed25519
 sudo chmod 600 /opt/ali-cloud-agent/secrets/diag_ed25519
 
-# This is the PUBLIC key to paste into step A4 on every host:
+# The PUBLIC key — you will paste this into step 2d on every host:
 sudo cat /opt/ali-cloud-agent/secrets/diag_ed25519.pub
 ```
 
-The private key stays on the backend server only. `secrets/` is git-ignored.
+The private key never leaves the backend server. `secrets/` is git-ignored.
+**One keypair serves all hosts** — do not generate a new one per host.
 
-### B2. Mount the key into the container
+---
 
-The app runs in Docker, so the key must be visible inside it. Add to the `app`
-service in `docker-compose.app.yml`:
+# Part 2 — provision each monitored host
 
-```yaml
-    volumes:
-      - ./secrets/diag_ed25519:/run/secrets/diag_ed25519:ro
+Run these on the host you are adding. Commands assume you are **root** (drop the
+`sudo` if so).
+
+### 2·0. Set these three variables first
+
+Paste this once per shell session, with your real values. Every command below uses
+them, so there are **no placeholders left to hand-edit**:
+
+```bash
+BACKEND_IP='10.0.0.57'                                        # the backend server's private IP
+HOST_IP='10.0.0.60'                                           # the host you are provisioning
+PUBKEY='ssh-ed25519 AAAA...replace-with-Part-1-output... cloud-agent-diag'
 ```
 
-### B3. Configure the app
+> ⚠️ Never paste `<SOMETHING>` into a shell — bash reads `<` as an input redirect
+> and fails with `No such file or directory`. That is why these are variables.
 
-Add to `/opt/ali-cloud-agent/.env` — **no inline comments** (Docker Compose keeps
-them as part of the value):
+### 2a. Create the unprivileged user
 
-```ini
-DIAG_ENABLED=true
-DIAG_SSH_USER=cloudmonitor
-DIAG_SSH_KEY=/run/secrets/diag_ed25519
-DIAG_SSH_PORT=22
-DIAG_REMOTE_SCRIPT=/usr/local/bin/cam-diag
-DIAG_TIMEOUT=20
-DIAG_MAX_HOSTS=3
+```bash
+useradd --system --create-home --shell /bin/bash cloudmonitor
 ```
 
-### B4. Make sure each instance has a `host` set
+### 2b. Install the diagnostic script
 
-Diagnostics use the same `host` value as the service probes. On the register page
-(`instances.html`), confirm each instance you want evidence from has its private
-IP/DNS filled in — a blank host means it is skipped.
+**Check first, then pick ONE option — do not run both:**
 
-### B5. Apply
+```bash
+ls -d /opt/ali-cloud-agent 2>/dev/null && echo "repo present -> use Option 1" \
+                                       || echo "no repo -> use Option 2"
+```
+
+If you deployed with the split compose files (`docker-compose.{db,app,fe}.yml`),
+**every** server has a checkout — frontend included — so Option 1 is the normal
+path on all of them. Option 2 exists only for a host with no checkout at all.
+
+**Option 1 — repo present on this host:**
 
 ```bash
 cd /opt/ali-cloud-agent
-git pull origin production-refactor
+git pull origin UAT
+ls -l deploy/cam-diag.sh                     # confirm the file is present
+install -m 0755 -o root -g root deploy/cam-diag.sh /usr/local/bin/cam-diag
+```
+
+**Option 2 — no repo on this host.** Copy the script over from the backend server.
+Note the first command runs on the **backend**, the second on the target host:
+
+```bash
+# 1) on the BACKEND server — set HOST_IP to the host you are provisioning:
+HOST_IP='10.0.0.56'
+scp /opt/ali-cloud-agent/deploy/cam-diag.sh root@"$HOST_IP":/tmp/
+
+# 2) then on THAT host:
+install -m 0755 -o root -g root /tmp/cam-diag.sh /usr/local/bin/cam-diag
+```
+
+> `Could not resolve hostname :` means `HOST_IP` was empty — set it first, and make
+> sure you are running the `scp` on the **backend** server, not the target.
+
+Either way, confirm and sanity-check (read-only, changes nothing):
+
+```bash
+ls -l /usr/local/bin/cam-diag
+/usr/local/bin/cam-diag cpu | head -30
+```
+
+> `install: cannot stat 'cam-diag.sh'` means you are not in the directory holding the
+> file — use the full `deploy/cam-diag.sh` path from the repo root, as above.
+
+### 2c. Allow only that one command via sudo
+
+Use plain redirection — a piped `tee` can be mangled by web terminals:
+
+```bash
+printf 'cloudmonitor ALL=(root) NOPASSWD: /usr/local/bin/cam-diag\n' > /etc/sudoers.d/cloudmonitor-diag
+chmod 0440 /etc/sudoers.d/cloudmonitor-diag
+visudo -c | tail -3
+```
+
+`visudo -c` must list `/etc/sudoers.d/cloudmonitor-diag: parsed OK`.
+
+> **Only if `visudo -c` reports an error** for that file, delete it immediately so
+> `sudo` is not left broken (`rm -f /etc/sudoers.d/cloudmonitor-diag`) and retry.
+> **If it parsed OK, do NOT delete it** — that is the entry the monitor needs.
+
+### 2d. Authorise the monitor's key
+
+Uses `$PUBKEY` and `$BACKEND_IP` from step 2·0. The `from=` restriction makes the
+key usable *only* from the backend server:
+
+```bash
+install -d -m 700 -o cloudmonitor -g cloudmonitor /home/cloudmonitor/.ssh
+
+printf 'from="%s",no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty %s\n' \
+  "$BACKEND_IP" "$PUBKEY" >> /home/cloudmonitor/.ssh/authorized_keys
+
+chown cloudmonitor:cloudmonitor /home/cloudmonitor/.ssh/authorized_keys
+chmod 600 /home/cloudmonitor/.ssh/authorized_keys
+
+# verify the line looks right (one line, starts with from=, ends with the comment)
+tail -1 /home/cloudmonitor/.ssh/authorized_keys
+```
+
+`no-pty` is safe: the app uses an SSH *exec* channel, not an interactive shell.
+
+### 2e. Verify locally
+
+```bash
+sudo -u cloudmonitor sudo -n /usr/local/bin/cam-diag cpu | head -8
+```
+
+Expect `== HOST ==` / `== CPU SNAPSHOT ==`. *"sudo: a password is required"* means
+2c did not apply.
+
+### 2f. Network
+
+Allow **the backend server's IP → this host `:22`** in the security group.
+
+### 2g. Confirm from the backend server
+
+Run this **on the backend server** (set `HOST_IP` there too — see 2·0). It
+exercises the exact path the app uses: SSH → sudo → script.
+
+```bash
+HOST_IP='10.0.0.60'      # the host you just provisioned
+
+ssh -i /opt/ali-cloud-agent/secrets/diag_ed25519 -o BatchMode=yes \
+    -o StrictHostKeyChecking=accept-new \
+    cloudmonitor@"$HOST_IP" 'sudo -n /usr/local/bin/cam-diag cpu' | head -10
+```
+
+---
+
+## Notes per host type
+
+**Database hosts** — the highest value. The script enumerates every running
+PostgreSQL container and reports live `pg_stat_activity` rows plus recent
+errors/OOM messages, which is what actually names the offending query.
+
+**The backend server is itself a monitored host** — and it needs one extra step.
+
+It is both monitor and target, so it needs the full Part 2. Set its inventory `host`
+to the **private IP, not `127.0.0.1`** (inside the container, localhost is the
+container, not the host).
+
+⚠️ **The `from=` restriction needs a second entry on this host.** When the container
+reaches *other* hosts, the traffic leaves the box and is SNAT'd to the backend's own
+IP — so `from="$BACKEND_IP"` matches. But when it connects to the backend's **own**
+IP the traffic never leaves: it is delivered locally over the Docker bridge, so sshd
+sees the **container's** address instead and rejects the key
+(`AuthenticationException: Authentication failed`, even though the same `ssh` command
+works from the host shell).
+
+Add a second `authorized_keys` line scoped to the container subnet — detected
+automatically, so there is nothing to look up:
+
+```bash
+NET=$(docker inspect cloud-agent-app --format '{{range $k,$v := .NetworkSettings.Networks}}{{$k}}{{end}}')
+SUBNET=$(docker network inspect "$NET" --format '{{range .IPAM.Config}}{{.Subnet}}{{end}}')
+echo "container network: $NET  subnet: $SUBNET"
+
+printf 'from="%s",no-port-forwarding,no-agent-forwarding,no-X11-forwarding,no-pty %s\n' \
+  "$SUBNET" "$PUBKEY" >> /home/cloudmonitor/.ssh/authorized_keys
+
+wc -l /home/cloudmonitor/.ssh/authorized_keys      # expect 2
+```
+
+The subnet is Docker-internal and not routable from outside the host, so this remains
+least-privilege. Re-running the container-side check should then report `OK` for the
+backend's own IP.
+
+**Frontend / non-database hosts** — everything works except the PostgreSQL
+sections, which are simply omitted when no Postgres container is present. You still
+get load, top processes, container CPU/memory, and listening ports. `docker stats
+unavailable` on a host without Docker is expected and harmless.
+
+---
+
+# Part 3 — wire up the app (backend server, once)
+
+### 3a. Mount the key into the container
+
+**Already in the repo** — `docker-compose.app.yml` mounts the secrets directory
+read-only, so the Part 1 key appears inside the container at
+`/run/secrets/diag_ed25519`:
+
+```yaml
+    volumes:
+      - ./secrets:/run/secrets:ro
+```
+
+Nothing to edit on the server; the `git pull` in 3c picks it up. (A directory is
+mounted rather than a single file so this stays harmless before a key exists.)
+
+### 3b. Configure
+
+Append to `/opt/ali-cloud-agent/.env` — **no inline comments**, Docker Compose
+keeps them as part of the value:
+
+```bash
+cd /opt/ali-cloud-agent
+sed -i '/^DIAG_/d' .env
+printf '%s\n' \
+  'DIAG_ENABLED=true' \
+  'DIAG_SSH_USER=cloudmonitor' \
+  'DIAG_SSH_KEY=/run/secrets/diag_ed25519' \
+  'DIAG_SSH_PORT=22' \
+  'DIAG_REMOTE_SCRIPT=/usr/local/bin/cam-diag' \
+  'DIAG_TIMEOUT=20' \
+  'DIAG_MAX_HOSTS=3' >> .env
+grep '^DIAG_' .env
+```
+
+`DIAG_MAX_HOSTS=3` caps how many hosts are contacted per alert, so a multi-host
+breach cannot stretch the scan cycle. Raise it if you monitor more than three hosts
+and want evidence from all of them.
+
+### 3c. Apply
+
+```bash
+cd /opt/ali-cloud-agent
+git pull origin UAT
 docker compose -f docker-compose.app.yml up -d --build
 ```
 
-### B6. Verify end-to-end
+`--build` (not just `--force-recreate`) is required: `paramiko` is a dependency.
+
+### 3d. Confirm each instance has a `host`
+
+Diagnostics reuse the service-probe `host`. On the register page (`instances.html`),
+every instance you want evidence from needs its private IP/DNS filled in — a blank
+host is skipped silently.
+
+### 3e. Verify end-to-end
 
 ```bash
-# 1. Is it enabled and can it reach a host?
+HOST_IP='10.0.0.60'      # a host you have provisioned
+
 docker exec cloud-agent-app python -c "
 import diagnostics as d
 print('enabled:', d.enabled())
-print(d._run_remote('<monitored-host-ip>', 'cpu')[:600])"
+out = d._run_remote('$HOST_IP', 'cpu')
+print(out[:400] if out else 'FAILED - see docker logs cloud-agent-app')"
 ```
 
-Expect the `== HOST ==` / `== TOP PROCESSES BY CPU ==` sections. Then send a real
-alert — click **Send alert email** on the dashboard while a breach is present, or
-wait for the next one. The email will contain a **"What caused this — live evidence
-from the affected host"** section.
+Expect `enabled: True` and the `== HOST ==` sections. Then trigger a real alert —
+click **Send alert email** on the dashboard while a breach is present, or wait for
+the next one.
 
 ---
 
@@ -181,14 +334,13 @@ klip-postgres   188.20%   880MiB / 3.4GiB   25.8%
 klip_db | postgres | 10.0.0.57 | active | | 56 | WITH contract_candidates AS (SELECT DISTINCT ...
 ```
 
-That names the **service** (`klip-postgres`, driven by the client at `10.0.0.57`),
-the **activity** (the specific SQL), and **how long** it had been running (56 s) —
-the three things previously only obtainable by SSHing in manually.
+That names the **service** (`klip-postgres`, driven by that client), the **activity**
+(the specific SQL) and **how long** it had been running (56 s) — the three things
+previously only obtainable by SSHing in by hand.
 
-When evidence is available the generic "likely causes" list is suppressed, since
-the alert no longer needs to guess. If collection fails (host unreachable, key not
-authorised, sudo not configured) the alert still sends, with the generic guidance
-as before.
+When evidence is available the generic "likely causes" list is suppressed. If
+collection fails (host unreachable, key not authorised, sudo not configured) the
+alert still sends, with the generic guidance as before.
 
 ---
 
@@ -197,12 +349,15 @@ as before.
 | Symptom (in `docker logs cloud-agent-app`) | Cause | Fix |
 |---|---|---|
 | no `diagnostics` lines at all | disabled or unset | check `DIAG_ENABLED=true`, `DIAG_SSH_USER`, `DIAG_SSH_KEY` |
-| `AuthenticationException` | public key not authorised on the host | redo A4; check `authorized_keys` ownership/permissions |
-| `(no output; stderr: sudo: a password is required)` | sudoers entry missing/typo | redo A3, run `visudo -c` |
-| `timed out` / `NoValidConnectionsError` | port 22 blocked from the backend | add the security-group rule (A6) |
-| `paramiko not installed` | image not rebuilt after the dependency was added | `docker compose … up -d --build` |
-| evidence section absent but alert arrives | instance has no `host` in the inventory | set it on the register page (B4) |
-| `docker stats unavailable` inside the output | the script ran but Docker is not present/permitted | expected on non-Docker hosts; other sections still work |
+| `AuthenticationException` | key not authorised, or `from=` does not match the backend's source IP | redo 2d; check `authorized_keys` ownership/permissions |
+| `AuthenticationException` **only for the backend's own IP**, while `ssh` works from that host's shell | container→own-host traffic arrives from the Docker bridge, not the host IP, so `from=` fails | add the container-subnet `authorized_keys` line — see "Notes per host type" |
+| `(no output; stderr: sudo: a password is required)` | sudoers entry missing or deleted | redo 2c, run `visudo -c` |
+| `sudo: sorry, you must have a tty` | `requiretty` set in sudoers (rare on Ubuntu) | add `Defaults:cloudmonitor !requiretty` |
+| `timed out` / `NoValidConnectionsError` | port 22 blocked from the backend | add the security-group rule (2f) |
+| `paramiko not installed` | image not rebuilt | `docker compose … up -d --build` |
+| evidence section absent but alert arrives | instance has no `host` in the inventory | set it on the register page (3d) |
+| evidence for only some hosts | `DIAG_MAX_HOSTS` reached | raise it in `.env` |
+| `docker stats unavailable` in the output | no Docker on that host, or not permitted | expected on non-Docker hosts; other sections still work |
 
 ## Turning it off
 
@@ -210,6 +365,7 @@ as before.
 sed -i 's|^DIAG_ENABLED=.*|DIAG_ENABLED=false|' /opt/ali-cloud-agent/.env
 docker compose -f docker-compose.app.yml up -d --force-recreate
 ```
-Alerts continue to work, with generic guidance instead of live evidence. To remove
-access entirely, delete `/etc/sudoers.d/cloudmonitor-diag` and the
-`authorized_keys` entry on each host.
+
+Alerts continue to work with generic guidance instead of live evidence. To revoke
+access entirely, on each host delete `/etc/sudoers.d/cloudmonitor-diag` and the
+`authorized_keys` entry (and optionally `userdel -r cloudmonitor`).

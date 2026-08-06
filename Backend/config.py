@@ -117,8 +117,13 @@ SCAN_CONCURRENCY = int(os.getenv("SCAN_CONCURRENCY", "8"))
 # problem appears, when everything RECOVERS, or as a periodic reminder every
 # ALERT_RENOTIFY_MINUTES while the same problem persists. This stops a stuck
 # metric from emailing every SCAN_INTERVAL_MINUTES.
-ALERT_RENOTIFY_MINUTES = int(os.getenv("ALERT_RENOTIFY_MINUTES", "60"))
+ALERT_RENOTIFY_MINUTES = _int("ALERT_RENOTIFY_MINUTES", 60)
 ALERT_ON_RECOVERY = _b("ALERT_ON_RECOVERY", True)
+# Flap guard: a problem must appear in this many CONSECUTIVE scans before anyone is
+# emailed, and must be clear for as many before "recovered" is sent. Without it a
+# metric oscillating across its threshold emits a new+recovered pair every cycle.
+# Minimum time a breach must hold = ALERT_CONFIRM_SCANS x SCAN_INTERVAL_MINUTES.
+ALERT_CONFIRM_SCANS = _int("ALERT_CONFIRM_SCANS", 2)
 
 # --- On-breach SSH diagnostics (see Backend/diagnostics.py) -------------------
 # When a metric breaches, SSH to the affected host and run ONE read-only script
@@ -130,7 +135,10 @@ DIAG_SSH_USER = _clean(os.getenv("DIAG_SSH_USER", ""))
 DIAG_SSH_KEY = _clean(os.getenv("DIAG_SSH_KEY", ""))       # path inside the container
 DIAG_SSH_PORT = _int("DIAG_SSH_PORT", 22)
 DIAG_REMOTE_SCRIPT = _clean(os.getenv("DIAG_REMOTE_SCRIPT", "/usr/local/bin/cam-diag"))
-DIAG_TIMEOUT = _int("DIAG_TIMEOUT", 20)      # seconds per host
+# Seconds per host. The remote script inspects several containers (and each
+# PostgreSQL instance's live queries), so a "focus=all" run on a busy box needs
+# more than a few seconds — too low and evidence is silently dropped from alerts.
+DIAG_TIMEOUT = _int("DIAG_TIMEOUT", 45)
 DIAG_MAX_HOSTS = _int("DIAG_MAX_HOSTS", 3)   # cap per alert, keeps the cycle short
 DIAG_MAX_CHARS = _int("DIAG_MAX_CHARS", 6000)
 # Reject unknown SSH host keys instead of auto-accepting them (stricter; needs
@@ -253,18 +261,34 @@ METRIC_TEMPLATES = [
 #   type "http" -> GET scheme://host:port`path` returns a status in `expect`
 # These map to the containers/services each box runs (the docker service's
 # published port). Refine ports/paths to match your actual setup.
+# Ports below are overridable per role via env so a probe can be corrected without
+# a code change; the defaults match this estate (Postgres not MySQL, the API on
+# APP_HOST_PORT, and no TLS on the frontend yet).
 SERVICE_CHECKS_BY_ROLE = {
     "db": [
-        {"name": "MySQL", "type": "tcp", "port": 3306},
+        {"name": "PostgreSQL", "type": "tcp", "port": _int("PROBE_DB_PORT", 5433)},
         {"name": "SSH", "type": "tcp", "port": 22},
     ],
     "frontend": [
-        {"name": "HTTP", "type": "http", "scheme": "http", "port": 80, "path": "/", "expect": [200, 301, 302]},
-        {"name": "HTTPS", "type": "http", "scheme": "https", "port": 443, "path": "/", "expect": [200, 301, 302]},
+        {"name": "HTTP", "type": "http", "scheme": "http",
+         "port": _int("PROBE_FE_HTTP_PORT", 80), "path": "/", "expect": [200, 301, 302]},
+        # No HTTPS check by default — staging is HTTP-only, so a 443 probe would
+        # report a false outage. Set PROBE_FE_HTTPS=true once TLS is in place.
+        *([{"name": "HTTPS", "type": "http", "scheme": "https", "port": 443,
+            "path": "/", "expect": [200, 301, 302]}] if _b("PROBE_FE_HTTPS", False) else []),
         {"name": "SSH", "type": "tcp", "port": 22},
     ],
     "backend": [
-        {"name": "API", "type": "http", "scheme": "http", "port": 8080, "path": "/health", "expect": [200, 204]},
+        # The monitor cannot usually probe a published port on its OWN host: the
+        # packet would have to hairpin back into the same container, which Docker's
+        # bridge does not route (especially when published to a specific IP). That
+        # yields a false "API down" for the box the monitor runs on, so this probe
+        # is opt-out via PROBE_BE_API=false. The app's own health is already covered
+        # by /api/ready, and a dead app would produce no scans at all.
+        *([{"name": "API", "type": "http", "scheme": "http",
+            "port": _int("PROBE_BE_API_PORT", 5050),
+            "path": os.getenv("PROBE_BE_API_PATH", "/api/health").strip() or "/api/health",
+            "expect": [200, 204]}] if _b("PROBE_BE_API", True) else []),
         {"name": "SSH", "type": "tcp", "port": 22},
     ],
     "web": [

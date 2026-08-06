@@ -59,6 +59,23 @@ def set_last_scan(scan: dict) -> None:
     db.session.commit()
 
 
+def attach_diagnostics(diags: dict) -> None:
+    """Store on-breach evidence on the most recent scan run.
+
+    Diagnostics are gathered after the run is persisted (the alert decision comes
+    first), so this updates the row in place. Best-effort: never raise into the
+    scan cycle."""
+    if not diags:
+        return
+    try:
+        latest = ScanRun.query.order_by(ScanRun.id.desc()).first()
+        if latest is not None:
+            latest.diagnostics = diags
+            db.session.commit()
+    except Exception:
+        db.session.rollback()
+
+
 def set_last_alert(alert: dict) -> None:
     """Persist an alert send summary, linked to the most recent scan run."""
     latest = ScanRun.query.order_by(ScanRun.id.desc()).first()
@@ -113,6 +130,8 @@ def _scan_run_to_dict(run: ScanRun) -> dict:
         "services_down": [s for s in services if s["up"] is False],
         "services_down_count": run.services_down_count,
         "services_total": run.services_total,
+        # On-breach SSH evidence, so the dashboard can show what the email shows.
+        "diagnostics": run.diagnostics or {},
     }
 
 
@@ -125,6 +144,21 @@ def _alert_to_dict(a: Alert) -> dict:
 
 
 # --- alerting support -------------------------------------------------------
+def recent_problem_key_sets(n: int) -> list:
+    """Problem-key sets for the last ``n`` scan runs, newest first.
+
+    A "problem key" is a breached metric key or a down service key. The alerting
+    logic needs several scans so it can require a breach to persist before
+    emailing (see alerting.decide)."""
+    runs = ScanRun.query.order_by(ScanRun.id.desc()).limit(max(1, n)).all()
+    out = []
+    for r in runs:
+        keys = {m.key for m in r.metric_results if m.breached and m.key}
+        keys |= {s.key for s in r.service_results if s.up is False and s.key}
+        out.append(keys)
+    return out
+
+
 def previous_problem_keys() -> set:
     """Problem keys from the scan run immediately BEFORE the latest one.
 
@@ -139,6 +173,16 @@ def previous_problem_keys() -> set:
     keys = {m.key for m in prev.metric_results if m.breached and m.key}
     keys |= {s.key for s in prev.service_results if s.up is False and s.key}
     return keys
+
+
+def last_auto_alert() -> tuple:
+    """``(created_at, reason)`` of the most recent AUTO alert, or ``(None, None)``.
+
+    The reason tells decide() whether we already announced a problem (so a
+    recovery is worth sending) or already announced the recovery."""
+    a = (Alert.query.filter(Alert.trigger == "auto")
+         .order_by(Alert.id.desc()).first())
+    return (a.created_at, a.reason) if a else (None, None)
 
 
 def last_auto_alert_at() -> datetime | None:
