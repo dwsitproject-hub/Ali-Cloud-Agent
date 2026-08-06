@@ -117,8 +117,13 @@ SCAN_CONCURRENCY = int(os.getenv("SCAN_CONCURRENCY", "8"))
 # problem appears, when everything RECOVERS, or as a periodic reminder every
 # ALERT_RENOTIFY_MINUTES while the same problem persists. This stops a stuck
 # metric from emailing every SCAN_INTERVAL_MINUTES.
-ALERT_RENOTIFY_MINUTES = int(os.getenv("ALERT_RENOTIFY_MINUTES", "60"))
+ALERT_RENOTIFY_MINUTES = _int("ALERT_RENOTIFY_MINUTES", 60)
 ALERT_ON_RECOVERY = _b("ALERT_ON_RECOVERY", True)
+# Flap guard: a problem must appear in this many CONSECUTIVE scans before anyone is
+# emailed, and must be clear for as many before "recovered" is sent. Without it a
+# metric oscillating across its threshold emits a new+recovered pair every cycle.
+# Minimum time a breach must hold = ALERT_CONFIRM_SCANS x SCAN_INTERVAL_MINUTES.
+ALERT_CONFIRM_SCANS = _int("ALERT_CONFIRM_SCANS", 2)
 
 # --- On-breach SSH diagnostics (see Backend/diagnostics.py) -------------------
 # When a metric breaches, SSH to the affected host and run ONE read-only script

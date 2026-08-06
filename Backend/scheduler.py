@@ -73,18 +73,16 @@ def _maybe_auto_alert(scan: dict) -> None:
     Transition-based (see alerting.decide): a new problem, a full recovery, or a
     periodic reminder — never one email per cycle for a stuck metric.
     """
-    current_keys = {r["key"] for r in scan.get("results", [])
-                    if r.get("breached") and r.get("key")}
-    current_keys |= {s["key"] for s in scan.get("services_down", [])
-                     if s.get("key")}
-
+    # The current scan is already persisted, so read the recent history straight
+    # back out: decide() needs several scans to confirm a breach has persisted
+    # rather than merely flapped across the threshold.
     reason = alerting.decide(
-        current_keys,
-        state.previous_problem_keys(),
-        state.last_auto_alert_at(),
+        state.recent_problem_key_sets(config.ALERT_CONFIRM_SCANS + 1),
+        state.last_auto_alert(),
         datetime.now(timezone.utc),
         config.ALERT_RENOTIFY_MINUTES,
         config.ALERT_ON_RECOVERY,
+        config.ALERT_CONFIRM_SCANS,
     )
     if not reason:
         return

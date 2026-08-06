@@ -144,6 +144,21 @@ def _alert_to_dict(a: Alert) -> dict:
 
 
 # --- alerting support -------------------------------------------------------
+def recent_problem_key_sets(n: int) -> list:
+    """Problem-key sets for the last ``n`` scan runs, newest first.
+
+    A "problem key" is a breached metric key or a down service key. The alerting
+    logic needs several scans so it can require a breach to persist before
+    emailing (see alerting.decide)."""
+    runs = ScanRun.query.order_by(ScanRun.id.desc()).limit(max(1, n)).all()
+    out = []
+    for r in runs:
+        keys = {m.key for m in r.metric_results if m.breached and m.key}
+        keys |= {s.key for s in r.service_results if s.up is False and s.key}
+        out.append(keys)
+    return out
+
+
 def previous_problem_keys() -> set:
     """Problem keys from the scan run immediately BEFORE the latest one.
 
@@ -158,6 +173,16 @@ def previous_problem_keys() -> set:
     keys = {m.key for m in prev.metric_results if m.breached and m.key}
     keys |= {s.key for s in prev.service_results if s.up is False and s.key}
     return keys
+
+
+def last_auto_alert() -> tuple:
+    """``(created_at, reason)`` of the most recent AUTO alert, or ``(None, None)``.
+
+    The reason tells decide() whether we already announced a problem (so a
+    recovery is worth sending) or already announced the recovery."""
+    a = (Alert.query.filter(Alert.trigger == "auto")
+         .order_by(Alert.id.desc()).first())
+    return (a.created_at, a.reason) if a else (None, None)
 
 
 def last_auto_alert_at() -> datetime | None:
