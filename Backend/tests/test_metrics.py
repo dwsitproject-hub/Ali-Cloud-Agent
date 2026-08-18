@@ -93,3 +93,42 @@ def test_blank_period_is_omitted_from_the_api_call(monkeypatch):
     ecs = config.build_metrics([_inst()])[0]
     agent1_scanner._query_metric_last(ecs)
     assert sent["Period"] == "60"            # ECS still pins its granularity
+
+
+# --- SSH probe port resolution ----------------------------------------------
+def test_ssh_port_defaults_to_22(monkeypatch):
+    monkeypatch.delenv("PROBE_SSH_PORT", raising=False)
+    monkeypatch.delenv("PROBE_FRONTEND_SSH_PORT", raising=False)
+    assert config.ssh_port_for_role("frontend") == 22
+    assert config.ssh_port_for_role("") == 22
+
+
+def test_ssh_port_global_override(monkeypatch):
+    monkeypatch.setenv("PROBE_SSH_PORT", "1818")
+    monkeypatch.delenv("PROBE_DB_SSH_PORT", raising=False)
+    assert config.ssh_port_for_role("db") == 1818
+
+
+def test_ssh_port_per_role_beats_global(monkeypatch):
+    """The real estate case: FE/BE moved sshd to 1818 while the DB box kept 22."""
+    monkeypatch.setenv("PROBE_FRONTEND_SSH_PORT", "1818")
+    monkeypatch.setenv("PROBE_BACKEND_SSH_PORT", "1818")
+    monkeypatch.delenv("PROBE_SSH_PORT", raising=False)
+    monkeypatch.delenv("PROBE_DB_SSH_PORT", raising=False)
+    assert config.ssh_port_for_role("frontend") == 1818
+    assert config.ssh_port_for_role("backend") == 1818
+    assert config.ssh_port_for_role("db") == 22
+
+
+def test_ssh_port_ignores_garbage(monkeypatch):
+    monkeypatch.setenv("PROBE_FRONTEND_SSH_PORT", "not-a-port")
+    assert config.ssh_port_for_role("frontend") == 22
+
+
+def test_diagnostics_port_follows_the_role_unless_pinned(monkeypatch):
+    monkeypatch.setenv("PROBE_FRONTEND_SSH_PORT", "1818")
+    monkeypatch.setattr(config, "DIAG_SSH_PORT_RAW", "")
+    assert config.diag_ssh_port_for_role("frontend") == 1818
+    # explicit DIAG_SSH_PORT still wins
+    monkeypatch.setattr(config, "DIAG_SSH_PORT_RAW", "2222")
+    assert config.diag_ssh_port_for_role("frontend") == 2222

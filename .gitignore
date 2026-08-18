@@ -1,6 +1,7 @@
 .env
-# Staging runbook holds internal IPs + cross-team infra inventory — keep local only.
+# Deployment runbooks hold internal IPs + cross-team infra inventory — keep local only.
 Docs/DEPLOY-STAGING.md
+Docs/DEPLOY-PRODUCTION.md
 # Local DB dumps — not source.
 inventory.sql
 # Internal ops findings (IPs, other teams' systems) — keep local.

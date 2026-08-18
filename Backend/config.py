@@ -133,7 +133,9 @@ ALERT_CONFIRM_SCANS = _int("ALERT_CONFIRM_SCANS", 2)
 DIAG_ENABLED = _b("DIAG_ENABLED", False)
 DIAG_SSH_USER = _clean(os.getenv("DIAG_SSH_USER", ""))
 DIAG_SSH_KEY = _clean(os.getenv("DIAG_SSH_KEY", ""))       # path inside the container
-DIAG_SSH_PORT = _int("DIAG_SSH_PORT", 22)
+# Left blank by default so it can be distinguished from "explicitly set to 22":
+# unset means "follow the role's probe port" (see diag_ssh_port_for_role).
+DIAG_SSH_PORT_RAW = _clean(os.getenv("DIAG_SSH_PORT", ""))
 DIAG_REMOTE_SCRIPT = _clean(os.getenv("DIAG_REMOTE_SCRIPT", "/usr/local/bin/cam-diag"))
 # Seconds per host. The remote script inspects several containers (and each
 # PostgreSQL instance's live queries), so a "focus=all" run on a busy box needs
@@ -322,10 +324,43 @@ def metric_templates_for(inst: dict) -> list:
 # Ports below are overridable per role via env so a probe can be corrected without
 # a code change; the defaults match this estate (Postgres not MySQL, the API on
 # APP_HOST_PORT, and no TLS on the frontend yet).
+def ssh_port_for_role(role: str) -> int:
+    """SSH port for one role: PROBE_<ROLE>_SSH_PORT, else PROBE_SSH_PORT, else 22.
+
+    Hardened hosts commonly move sshd off 22 - and not uniformly across an estate,
+    so this is per role rather than one global (e.g. FE/BE on 1818 while the DB box
+    is still on 22). Symptom of getting it wrong: the probe reports
+    ConnectionRefusedError, because the TCP RST proves the host WAS reached; a port
+    blocked by a security group times out instead.
+
+    The same value drives the on-breach diagnostics SSH connection, so a corrected
+    probe port fixes evidence collection too.
+    """
+    default = _int("PROBE_SSH_PORT", 22)
+    role = (role or "").strip().lower()
+    return _int(f"PROBE_{role.upper()}_SSH_PORT", default) if role else default
+
+
+def diag_ssh_port_for_role(role: str) -> int:
+    """SSH port for on-breach diagnostics.
+
+    ``DIAG_SSH_PORT`` wins when explicitly set (diagnostics may legitimately use a
+    different port than the probe); otherwise it follows the role's probe port, so
+    correcting a non-standard sshd port in one place fixes both the SSH probe and
+    evidence collection.
+    """
+    if DIAG_SSH_PORT_RAW:
+        try:
+            return int(DIAG_SSH_PORT_RAW)
+        except ValueError:
+            pass
+    return ssh_port_for_role(role)
+
+
 SERVICE_CHECKS_BY_ROLE = {
     "db": [
         {"name": "PostgreSQL", "type": "tcp", "port": _int("PROBE_DB_PORT", 5433)},
-        {"name": "SSH", "type": "tcp", "port": 22},
+        {"name": "SSH", "type": "tcp", "port": ssh_port_for_role("db")},
     ],
     "frontend": [
         {"name": "HTTP", "type": "http", "scheme": "http",
@@ -334,7 +369,7 @@ SERVICE_CHECKS_BY_ROLE = {
         # report a false outage. Set PROBE_FE_HTTPS=true once TLS is in place.
         *([{"name": "HTTPS", "type": "http", "scheme": "https", "port": 443,
             "path": "/", "expect": [200, 301, 302]}] if _b("PROBE_FE_HTTPS", False) else []),
-        {"name": "SSH", "type": "tcp", "port": 22},
+        {"name": "SSH", "type": "tcp", "port": ssh_port_for_role("frontend")},
     ],
     "backend": [
         # The monitor cannot usually probe a published port on its OWN host: the
@@ -347,7 +382,7 @@ SERVICE_CHECKS_BY_ROLE = {
             "port": _int("PROBE_BE_API_PORT", 5050),
             "path": os.getenv("PROBE_BE_API_PATH", "/api/health").strip() or "/api/health",
             "expect": [200, 204]}] if _b("PROBE_BE_API", True) else []),
-        {"name": "SSH", "type": "tcp", "port": 22},
+        {"name": "SSH", "type": "tcp", "port": ssh_port_for_role("backend")},
     ],
     "rds": [
         # Managed instance: no SSH, and the endpoint only answers if the monitor's
@@ -366,7 +401,7 @@ SERVICE_CHECKS_BY_ROLE = {
         {"name": "IMAPS", "type": "tcp", "port": 993},
     ],
     "router": [
-        {"name": "SSH", "type": "tcp", "port": 22},
+        {"name": "SSH", "type": "tcp", "port": ssh_port_for_role("router")},
         {"name": "API", "type": "tcp", "port": 8728},
         {"name": "Winbox", "type": "tcp", "port": 8291},
     ],

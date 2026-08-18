@@ -274,12 +274,20 @@ printf '%s\n' \
   'DIAG_ENABLED=true' \
   'DIAG_SSH_USER=cloudmonitor' \
   'DIAG_SSH_KEY=/run/secrets/diag_ed25519' \
-  'DIAG_SSH_PORT=22' \
   'DIAG_REMOTE_SCRIPT=/usr/local/bin/cam-diag' \
-  'DIAG_TIMEOUT=20' \
+  'DIAG_TIMEOUT=45' \
   'DIAG_MAX_HOSTS=3' >> .env
 grep '^DIAG_' .env
 ```
+
+**`DIAG_SSH_PORT` is deliberately absent above.** Left unset, diagnostics
+connects on the same port as that role's SSH *probe* - `PROBE_SSH_PORT`, or
+`PROBE_<ROLE>_SSH_PORT` for a single role. A host whose sshd is not on 22 is
+then corrected in one place and both the probe and evidence collection follow.
+Set `DIAG_SSH_PORT` only if diagnostics must use a different port than the probe.
+
+If a host's SSH probe is red with `ConnectionRefusedError`, diagnostics will fail
+against that host for the same reason - fix the port before enabling this.
 
 `DIAG_MAX_HOSTS=3` caps how many hosts are contacted per alert, so a multi-host
 breach cannot stretch the scan cycle. Raise it if you monitor more than three hosts

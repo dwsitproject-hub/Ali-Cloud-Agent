@@ -39,8 +39,14 @@ def enabled() -> bool:
     return bool(config.DIAG_ENABLED and config.DIAG_SSH_USER and config.DIAG_SSH_KEY)
 
 
-def _run_remote(host: str, focus: str) -> str | None:
-    """SSH to ``host`` and return the diagnostic text, or None on failure."""
+def _run_remote(host: str, focus: str, role: str = "") -> str | None:
+    """SSH to ``host`` and return the diagnostic text, or None on failure.
+
+    ``role`` selects the SSH port via ``config.ssh_port_for_role`` so evidence
+    collection reaches hosts whose sshd is not on 22 — the same setting that fixes
+    the SSH service probe. DIAG_SSH_PORT still wins when set explicitly, for the
+    case where diagnostics uses a different port than the probe.
+    """
     if focus not in _ALLOWED_FOCUS:      # defensive: never pass through unknown input
         focus = "all"
     try:
@@ -58,7 +64,7 @@ def _run_remote(host: str, focus: str) -> str | None:
     try:
         client.connect(
             hostname=host,
-            port=config.DIAG_SSH_PORT,
+            port=config.diag_ssh_port_for_role(role),
             username=config.DIAG_SSH_USER,
             key_filename=config.DIAG_SSH_KEY,
             timeout=config.DIAG_TIMEOUT,
@@ -87,11 +93,16 @@ def _run_remote(host: str, focus: str) -> str | None:
 
 
 def _hosts_for_instances(instance_ids: set) -> dict:
-    """Map instance_id -> probe host from the DB inventory (blank hosts skipped)."""
+    """Map instance_id -> {host, role} from the DB inventory (blank hosts skipped).
+
+    The role comes along because it decides which SSH port to use (see
+    ``config.ssh_port_for_role``).
+    """
     try:
         from models import Instance
         rows = Instance.query.filter(Instance.id.in_(list(instance_ids))).all()
-        return {r.id: (r.host or "").strip() for r in rows if (r.host or "").strip()}
+        return {r.id: {"host": (r.host or "").strip(), "role": (r.role or "").strip()}
+                for r in rows if (r.host or "").strip()}
     except Exception as exc:
         log.warning("diagnostics: could not resolve hosts: %s", exc)
         return {}
@@ -129,12 +140,13 @@ def collect_for_scan(scan: dict) -> dict:
     hosts = _hosts_for_instances(set(wanted))
     results: dict = {}
     for iid, meta in list(wanted.items())[:config.DIAG_MAX_HOSTS]:
-        host = hosts.get(iid)
+        target = hosts.get(iid) or {}
+        host = target.get("host")
         if not host:
             continue      # no probe host configured for this instance
         focuses = meta["focuses"]
         focus = focuses.pop() if len(focuses) == 1 else "all"
-        output = _run_remote(host, focus)
+        output = _run_remote(host, focus, target.get("role", ""))
         if output:
             results[meta["name"]] = {"host": host, "focus": focus, "output": output}
             log.info("diagnostics collected from %s (%s)", host, focus)
