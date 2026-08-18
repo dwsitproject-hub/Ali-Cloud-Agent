@@ -107,10 +107,18 @@ name, `role` (selects the default service checks), `host` (IP/DNS for probes;
 blank skips them), and group — or enable/disable/delete existing ones. Changes
 are picked up on the next scan; no code edit or restart needed.
 
-`flask seed` loads an initial 9 instances from `config.INSTANCE_GROUPS` (seed data
+`flask seed` loads the initial inventory from `config.INSTANCE_GROUPS` (seed data
 only). Metric definitions/thresholds (`METRIC_TEMPLATES`) and the per-role service
 checks (`SERVICE_CHECKS_BY_ROLE`) remain in `Backend/config.py`. Namespaces and
 metric names come from CloudMonitor's *Appendix 1: Metrics*.
+
+**ECS vs ApsaraDB RDS.** The two products publish to different CloudMonitor
+namespaces, so an RDS instance scanned as ECS returns no datapoints at all — the
+dashboard shows `-` and no threshold is ever evaluated. Register such an instance
+with role **`rds`** (or give it its real `pgm-`/`rm-` id, which is detected
+automatically) and it is queried against `acs_rds_dashboard` instead. The query
+period is left to CloudMonitor by default, since RDS granularity differs between
+basic (300s) and enhanced (60s) monitoring; `RDS_METRIC_PERIOD` pins it.
 
 ## HTTP API
 

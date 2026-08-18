@@ -223,6 +223,7 @@ INSTANCE_GROUPS = [
             {"id": "i-k1ab5rh48e40enbqa7ii", "name": "DB Staging", "role": "db", "host": _host("MONITOR_HOST_STAGING_DB")},
             {"id": "i-k1a5ja5hi7ps6aa7x88r", "name": "Frontend Staging", "role": "frontend", "host": _host("MONITOR_HOST_STAGING_FRONTEND")},
             {"id": "i-k1a4m0oobaw170notm7p", "name": "Backend Staging", "role": "backend", "host": _host("MONITOR_HOST_STAGING_BACKEND")},
+            {"id": "pgm-d9jx9o06qae8gf3h", "name": "ApsaraDB Staging", "role": "rds", "host": _host("MONITOR_HOST_STAGING_RDS")},
         ],
     },
     {
@@ -235,7 +236,14 @@ INSTANCE_GROUPS = [
     },
 ]
 
-# Per-instance metric set. Each template becomes one DescribeMetricLast call.
+# --- Per-instance metrics ----------------------------------------------------
+# Each template becomes one DescribeMetricLast call. WHICH set applies depends on
+# what the instance actually is: an ECS box and an ApsaraDB RDS instance publish
+# to different CloudMonitor namespaces under different metric names, so querying
+# an RDS instance as if it were ECS returns no datapoints at all - the dashboard
+# shows "-" forever and nothing is ever alerted on.
+
+# ECS. Hypervisor CPU needs no agent; memory/disk require the CloudMonitor agent.
 METRIC_TEMPLATES = [
     {
         # Hypervisor-level - works WITHOUT the CloudMonitor agent.
@@ -254,6 +262,56 @@ METRIC_TEMPLATES = [
         "threshold": 90.0, "comparison": ">", "unit": "%", "agent_required": True,
     },
 ]
+
+# ApsaraDB RDS (instance ids like "pgm-..." / "rm-..."). The managed service
+# reports these itself, so no CloudMonitor agent is involved.
+#
+# Period is deliberately BLANK by default: RDS granularity varies by instance
+# (basic monitoring is 300s, enhanced 60s), and asking for a granularity an
+# instance does not publish at returns an EMPTY result rather than an error —
+# i.e. a silently blank dashboard. Omitting it lets CloudMonitor pick, which
+# also yields the freshest datapoint. Pin it via RDS_METRIC_PERIOD if needed.
+_RDS_PERIOD = _clean(os.getenv("RDS_METRIC_PERIOD", ""))
+
+METRIC_TEMPLATES_RDS = [
+    {
+        "suffix": "cpu", "label": "CPU", "namespace": "acs_rds_dashboard",
+        "metric_name": "CpuUsage", "period": _RDS_PERIOD, "stat": "Average",
+        "threshold": 80.0, "comparison": ">", "unit": "%", "agent_required": False,
+    },
+    {
+        "suffix": "mem", "label": "Memory", "namespace": "acs_rds_dashboard",
+        "metric_name": "MemoryUsage", "period": _RDS_PERIOD, "stat": "Average",
+        "threshold": 85.0, "comparison": ">", "unit": "%", "agent_required": False,
+    },
+    {
+        "suffix": "disk", "label": "Disk", "namespace": "acs_rds_dashboard",
+        "metric_name": "DiskUsage", "period": _RDS_PERIOD, "stat": "Average",
+        "threshold": 90.0, "comparison": ">", "unit": "%", "agent_required": False,
+    },
+]
+
+# Roles that are NOT ECS. Any role not listed here gets the ECS set above.
+METRIC_TEMPLATES_BY_ROLE = {"rds": METRIC_TEMPLATES_RDS}
+
+# Alibaba id prefixes that identify a non-ECS product (every ECS id starts with
+# "i-"). Used only as a fallback when the registered role does not say.
+_RDS_ID_PREFIXES = ("pgm-", "rm-")
+
+
+def metric_templates_for(inst: dict) -> list:
+    """The metric set for one instance: by role, else inferred from its id.
+
+    The role is authoritative - register an instance as "rds" and it is scanned
+    as RDS. The id-prefix fallback means an ApsaraDB instance registered under a
+    generic role (e.g. "db") still reports, instead of silently producing no data.
+    """
+    role = (inst.get("role") or "").strip().lower()
+    if role in METRIC_TEMPLATES_BY_ROLE:
+        return METRIC_TEMPLATES_BY_ROLE[role]
+    if (inst.get("id") or "").lower().startswith(_RDS_ID_PREFIXES):
+        return METRIC_TEMPLATES_RDS
+    return METRIC_TEMPLATES
 
 # --- Service health checks ---------------------------------------------------
 # Default service probes per ROLE. The monitor connects to the instance's `host`.
@@ -291,6 +349,12 @@ SERVICE_CHECKS_BY_ROLE = {
             "expect": [200, 204]}] if _b("PROBE_BE_API", True) else []),
         {"name": "SSH", "type": "tcp", "port": 22},
     ],
+    "rds": [
+        # Managed instance: no SSH, and the endpoint only answers if the monitor's
+        # IP is on the RDS whitelist. Leave the instance host blank to skip this
+        # probe and rely on metrics alone.
+        {"name": "PostgreSQL", "type": "tcp", "port": _int("PROBE_RDS_PORT", 5432)},
+    ],
     "web": [
         {"name": "HTTP", "type": "http", "scheme": "http", "port": 80, "path": "/", "expect": [200, 301, 302]},
         {"name": "HTTPS", "type": "http", "scheme": "https", "port": 443, "path": "/", "expect": [200, 301, 302]},
@@ -319,7 +383,7 @@ def build_metrics(instances: list) -> list:
     """Expand instance dicts into per-metric scan descriptors (one per template)."""
     metrics = []
     for inst in instances:
-        for tpl in METRIC_TEMPLATES:
+        for tpl in metric_templates_for(inst):
             metrics.append({
                 "key": f"{inst['id']}_{tpl['suffix']}",
                 "label": tpl["label"],
