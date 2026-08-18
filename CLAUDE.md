@@ -90,10 +90,17 @@ All routes require login except `/api/health`, `/api/ready`, and `/auth/*`.
   (frontend `instances.html`) or the CRUD API. The agents read enabled instances
   each scan, so changes apply on the next cycle.
 - `config.INSTANCE_GROUPS` is **seed data only** (`flask seed`), not the live source.
-- `METRIC_TEMPLATES` (CPU no-agent; Memory/Disk need the CloudMonitor agent) and
-  `SERVICE_CHECKS_BY_ROLE` (default TCP/HTTP checks per role) remain code; the
+- `METRIC_TEMPLATES` (ECS: CPU no-agent; Memory/Disk need the CloudMonitor agent)
+  and `SERVICE_CHECKS_BY_ROLE` (default TCP/HTTP checks per role) remain code; the
   `build_metrics`/`build_service_checks` helpers expand instance dicts into the
   flat lists the agents consume. `host=""` skips service probes for that box.
+- **Not every instance is ECS.** `METRIC_TEMPLATES_RDS` (namespace
+  `acs_rds_dashboard`; `CpuUsage`/`MemoryUsage`/`DiskUsage`, no agent) covers
+  ApsaraDB. `config.metric_templates_for(inst)` routes by `role` first, then by
+  id prefix (`pgm-`/`rm-`) so an RDS instance registered under a generic role
+  still reports. Scanning RDS as ECS is a **silent** failure — CloudMonitor
+  returns an empty datapoint list, not an error, so the value shows `-` forever
+  and no threshold is ever evaluated.
 
 ## Conventions / gotchas
 - Keep the scheduler to ONE process (single APScheduler). State is now in

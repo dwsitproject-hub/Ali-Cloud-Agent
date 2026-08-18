@@ -41,9 +41,13 @@ def _query_metric_last(metric: dict) -> dict:
     params = {
         "Namespace": metric["namespace"],
         "MetricName": metric["metric_name"],
-        "Period": metric.get("period", "60"),
         "Length": "1",
     }
+    # Period is optional: asking for a granularity the metric is not published at
+    # returns an empty result rather than an error, so a blank period lets
+    # CloudMonitor choose (useful for RDS, where basic monitoring is 300s).
+    if metric.get("period"):
+        params["Period"] = metric["period"]
     if metric.get("dimensions"):
         params["Dimensions"] = metric["dimensions"]
 
