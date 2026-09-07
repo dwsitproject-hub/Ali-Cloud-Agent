@@ -47,9 +47,10 @@ def run_scan_job(auto_alert=None) -> dict:
         scan["services_total"] = 0
 
     state.set_last_scan(scan)
-    log.info("scan complete: mode=%s breaches=%s/%s services_down=%s/%s",
+    log.info("scan complete: mode=%s breaches=%s/%s services_down=%s/%s no_data=%s",
              scan["mode"], scan["breach_count"], scan["total"],
-             scan["services_down_count"], scan["services_total"])
+             scan["services_down_count"], scan["services_total"],
+             scan.get("no_data_count", 0))
 
     if auto_alert:
         _maybe_auto_alert(scan)
@@ -87,8 +88,17 @@ def _maybe_auto_alert(scan: dict) -> None:
     if not reason:
         return
 
-    log.warning("auto-alert (%s): %s metric breach, %s service down",
-                reason, scan["breach_count"], scan["services_down_count"])
+    # A "stopped reporting" alert must be able to say WHAT went quiet, otherwise
+    # the email arrives with an empty problem list.
+    try:
+        scan["stopped_reporting"] = state.stopped_reporting()
+    except Exception:
+        log.exception("could not resolve stopped-reporting metrics")
+        scan["stopped_reporting"] = []
+
+    log.warning("auto-alert (%s): %s metric breach, %s service down, %s stopped reporting",
+                reason, scan["breach_count"], scan["services_down_count"],
+                len(scan["stopped_reporting"]))
 
     # Identify WHICH service/query caused it, so the email carries evidence
     # rather than guesses. Never let a diagnostics failure block the alert.

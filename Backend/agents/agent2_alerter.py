@@ -58,6 +58,42 @@ def _metrics_rows(results):
     return "".join(rows)
 
 
+def _stopped_section(stopped):
+    """Metrics that were reporting and now are not.
+
+    Worth its own section because it is NOT the same as a breach and not the same
+    as healthy: a metric with no value is never compared against its threshold,
+    so an instance whose agent dies looks fine on every dashboard while it burns.
+    """
+    if not stopped:
+        return ""
+    rows = []
+    for m in stopped:
+        why = html.escape(m.get("error") or "no datapoints returned")
+        rows.append(
+            f"<tr>"
+            f"<td style='padding:6px 10px;border-bottom:1px solid #eee;font-weight:600'>{html.escape(m.get('instance_name') or '')}</td>"
+            f"<td style='padding:6px 10px;border-bottom:1px solid #eee'>{html.escape(m.get('label') or '')}</td>"
+            f"<td style='padding:6px 10px;border-bottom:1px solid #eee;color:#b8860b'>STOPPED REPORTING"
+            f"<div style='color:#b8860b;font-size:11px'>{why}</div></td>"
+            f"</tr>"
+        )
+    return (
+        "<h3 style='font-size:14px;color:#b8860b;margin:18px 0 6px'>Metrics that stopped reporting</h3>"
+        "<p style='color:#555;font-size:13px;margin:0 0 6px'>These were reporting on the previous "
+        "scan and returned nothing on this one, so their thresholds could not be "
+        "evaluated. Usual causes: the CloudMonitor agent stopped (check "
+        "<code>systemctl status cloudmonitor</code> / <code>aliyun-service</code>), "
+        "or the host is under enough memory pressure that the agent cannot run — "
+        "which is itself the incident. Treat a value of “none” as unknown, never as OK.</p>"
+        "<table style='border-collapse:collapse;width:100%;font-size:14px'>"
+        "<thead><tr style='text-align:left;color:#888;font-size:12px;text-transform:uppercase'>"
+        "<th style='padding:6px 10px'>Instance</th><th style='padding:6px 10px'>Metric</th>"
+        "<th style='padding:6px 10px'>Status</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody></table>"
+    )
+
+
 def _services_section(services_down):
     if not services_down:
         return ("<p style='color:#27ae60;font-size:13px;margin:14px 0 4px'>"
@@ -277,14 +313,18 @@ def build_email(scan: dict) -> dict:
     n_breach = len(scan.get("breaches", []))
     services_down = scan.get("services_down", [])
     n_down = len(services_down)
+    stopped = scan.get("stopped_reporting", [])
+    n_stopped = len(stopped)
     when = scan.get("scanned_at", datetime.now(timezone.utc).isoformat())
 
-    if n_breach or n_down:
+    if n_breach or n_down or n_stopped:
         parts = []
         if n_breach:
             parts.append(f"{n_breach} threshold breach{'es' if n_breach != 1 else ''}")
         if n_down:
             parts.append(f"{n_down} service{'s' if n_down != 1 else ''} down")
+        if n_stopped:
+            parts.append(f"{n_stopped} metric{'s' if n_stopped != 1 else ''} stopped reporting")
         subject = "[CloudMonitor] " + ", ".join(parts)
         status_color = "#c0392b"
         status_text = " & ".join(parts) + " detected"
@@ -294,7 +334,7 @@ def build_email(scan: dict) -> dict:
         status_text = "All clear - metrics within thresholds, services up"
 
     metric_rows = _metrics_rows(scan.get("results", []))
-    services_html = _services_section(services_down)
+    services_html = _services_section(services_down) + _stopped_section(stopped)
     diagnosis_html = _evidence_section(scan) + _diagnosis_section(scan)
 
     body = f"""\

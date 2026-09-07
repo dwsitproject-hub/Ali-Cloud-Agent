@@ -13,6 +13,7 @@ from __future__ import annotations
 
 from datetime import datetime, timedelta, timezone
 
+import config
 from db import db
 from models import Alert, MetricResult, ScanRun, ServiceResult
 
@@ -147,16 +148,49 @@ def _alert_to_dict(a: Alert) -> dict:
 def recent_problem_key_sets(n: int) -> list:
     """Problem-key sets for the last ``n`` scan runs, newest first.
 
-    A "problem key" is a breached metric key or a down service key. The alerting
-    logic needs several scans so it can require a breach to persist before
-    emailing (see alerting.decide)."""
-    runs = ScanRun.query.order_by(ScanRun.id.desc()).limit(max(1, n)).all()
+    A "problem key" is a breached metric key, a down service key, or - when
+    ALERT_ON_NO_DATA is on - a ``<key>:nodata`` marker for a metric that STOPPED
+    reporting. That last one exists because a metric with no value is not
+    compared against its threshold, so it used to count as healthy: Backend
+    Staging sat at 95% memory for an hour without alerting, because the value kept
+    coming back empty.
+
+    "Stopped" means null now but non-null in the run before, so a box with no
+    CloudMonitor agent (memory/disk permanently blank) never triggers it. One
+    extra run is fetched to judge the oldest set. alerting.decide then applies the
+    usual ALERT_CONFIRM_SCANS hysteresis, so a single missed datapoint stays quiet.
+    """
+    want = max(1, n)
+    runs = ScanRun.query.order_by(ScanRun.id.desc()).limit(want + 1).all()
     out = []
-    for r in runs:
+    for i, r in enumerate(runs[:want]):
         keys = {m.key for m in r.metric_results if m.breached and m.key}
         keys |= {s.key for s in r.service_results if s.up is False and s.key}
+        if config.ALERT_ON_NO_DATA and i + 1 < len(runs):
+            reported_before = {m.key for m in runs[i + 1].metric_results
+                               if m.value is not None and m.key}
+            keys |= {f"{m.key}:nodata" for m in r.metric_results
+                     if m.value is None and m.key and m.key in reported_before}
         out.append(keys)
     return out
+
+
+def stopped_reporting() -> list:
+    """Metrics in the latest run that were reporting in the previous one.
+
+    Feeds the alert email so a "stopped reporting" alert can name what went
+    quiet, instead of arriving with an empty problem list.
+    """
+    runs = ScanRun.query.order_by(ScanRun.id.desc()).limit(2).all()
+    if len(runs) < 2:
+        return []
+    reported_before = {m.key for m in runs[1].metric_results
+                       if m.value is not None and m.key}
+    return [{"key": m.key, "label": m.label, "instance_id": m.instance_id,
+             "instance_name": m.instance_name, "group": m.group_name,
+             "error": m.error}
+            for m in runs[0].metric_results
+            if m.value is None and m.key and m.key in reported_before]
 
 
 def previous_problem_keys() -> set:

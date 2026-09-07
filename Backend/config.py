@@ -112,6 +112,18 @@ FLASK_PORT = int(os.getenv("FLASK_PORT", "5000"))
 # instances or slow/dead hosts (which otherwise each wait out the timeout).
 SCAN_CONCURRENCY = int(os.getenv("SCAN_CONCURRENCY", "8"))
 
+# When DescribeMetricLast comes back empty, re-ask over this explicit window
+# (DescribeMetricList) before concluding there is no data. Agent-reported
+# memory/disk points land irregularly, and an empty result used to be read as
+# "healthy" because a None value is never compared against its threshold.
+METRIC_LOOKBACK_MINUTES = _int("METRIC_LOOKBACK_MINUTES", 15)
+
+# Treat a metric that STOPS reporting as a problem worth alerting on, rather than
+# silently healthy. Only applies to metrics that had a value in the previous scan,
+# so a box with no CloudMonitor agent (permanently blank memory/disk) stays quiet;
+# and ALERT_CONFIRM_SCANS still applies, so a single missed datapoint is ignored.
+ALERT_ON_NO_DATA = _b("ALERT_ON_NO_DATA", True)
+
 # --- Alerting cadence (flap / flood control) ---------------------------------
 # Auto-alerts fire on TRANSITIONS, not every cycle: a mail goes out when a NEW
 # problem appears, when everything RECOVERS, or as a periodic reminder every

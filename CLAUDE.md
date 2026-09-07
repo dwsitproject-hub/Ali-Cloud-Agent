@@ -103,6 +103,20 @@ All routes require login except `/api/health`, `/api/ready`, and `/auth/*`.
   and no threshold is ever evaluated.
 
 ## Conventions / gotchas
+- **A metric with no value is NOT a healthy metric.** `_breached(None, ...)` is
+  `False`, so a blank value is never compared against its threshold. This once hid
+  a real incident: Backend Staging ran at 95% memory for an hour with no alert,
+  because `DescribeMetricLast` kept returning an empty datapoint list. Defences:
+  `agent1_scanner._query_metric_recent()` re-asks over an explicit window
+  (`METRIC_LOOKBACK_MINUTES`) when the "last" call is empty, and
+  `state.recent_problem_key_sets()` emits a `<key>:nodata` problem key for a
+  metric that *stops* reporting (`ALERT_ON_NO_DATA`, on by default; only for
+  metrics that had a value in the previous run, so agent-less hosts stay quiet).
+  `agent2_alerter._stopped_section()` names them in the email.
+- **Some metrics return one series per device.** `diskusage_utilization` reports
+  every filesystem, so `_pick_point()` takes the *worst* value at the newest
+  timestamp (max for `>` rules, min for `<`). Taking whichever sorted last could
+  hide a root filesystem at 99% behind a 3% partition.
 - Keep the scheduler to ONE process (single APScheduler). State is now in
   Postgres, but the scheduler must still be single; run gunicorn `--workers 1`.
 - The scheduler's background scan + the immediate first scan run inside an
