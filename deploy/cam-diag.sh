@@ -8,17 +8,39 @@
 # the monitor cannot execute anything else. Everything here is read-only: it
 # inspects processes, containers and database activity, and changes nothing.
 #
-# <focus> is one of: cpu | memory | disk | service | all   (anything else => all)
+# <focus> is one of: cpu | memory | disk | service | containers | all
+#                    (anything else => all). `containers` is machine-readable
+#                    and polled every scan; the rest are human-readable evidence.
 #
 # Review this script before installing it — it is meant to be auditable.
 set -uo pipefail
 export PATH=/usr/local/sbin:/usr/local/bin:/usr/sbin:/usr/bin:/sbin:/bin
 
 FOCUS="${1:-all}"
-case "$FOCUS" in cpu|memory|disk|service|all) ;; *) FOCUS=all ;; esac
+case "$FOCUS" in cpu|memory|disk|service|containers|all) ;; *) FOCUS=all ;; esac
 
 MAXQ=${CAM_DIAG_MAX_QUERIES:-5}     # live queries reported per database
 MAXPG=${CAM_DIAG_MAX_PG:-4}         # PostgreSQL containers inspected (keeps runtime bounded)
+MAXCTR=${CAM_DIAG_MAX_CONTAINERS:-60}
+
+# --- containers: machine-readable, and the ONLY output for this focus --------
+# The dashboard polls this every scan cycle, so it stays deliberately cheap: one
+# `docker ps` and nothing else. Tab-separated because image names contain ":" and
+# "/", and status strings contain spaces and parentheses ("Up 4 hours (healthy)").
+if [ "$FOCUS" = containers ]; then
+  printf 'HOSTNAME\t%s\n' "$(hostname)"
+  if command -v docker >/dev/null 2>&1; then
+    if ! timeout 10 docker ps -a \
+        --format 'CTR\t{{.Names}}\t{{.Image}}\t{{.State}}\t{{.Status}}\t{{.Ports}}' \
+        2>/dev/null | head -"$MAXCTR"; then
+      printf 'ERR\tdocker ps failed or timed out\n'
+    fi
+  else
+    printf 'ERR\tdocker not installed on this host\n'
+  fi
+  exit 0
+fi
+
 hr() { printf '\n== %s ==\n' "$1"; }
 
 hr "HOST"

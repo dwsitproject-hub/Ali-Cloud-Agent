@@ -263,4 +263,34 @@ def snapshot() -> dict:
              "breach_count": r.breach_count, "total": r.total}
             for r in history_runs
         ],
+        "instances": instance_details(),
     }
+
+
+def instance_details() -> dict:
+    """``{instance_id: {spec, containers, ...}}`` for the dashboard cards.
+
+    Keyed by id and kept OUT of the scan document on purpose: specs and container
+    lists are current-state properties of an instance, not measurements of one
+    scan, and duplicating them onto every metric row would bloat each scan and
+    every history entry.
+    """
+    from models import Instance
+
+    out = {}
+    for i in Instance.query.all():
+        spec = i.spec_dict()
+        containers = i.containers_json or []
+        out[i.id] = {
+            "name": i.name, "role": i.role, "host": i.host or "",
+            "enabled": i.enabled,
+            "spec": spec,
+            "containers": containers,
+            "containers_error": i.containers_error,
+            "containers_updated_at": (i.containers_updated_at.isoformat()
+                                      if i.containers_updated_at else None),
+            "containers_attention": sum(
+                1 for c in containers
+                if c.get("health") in ("unhealthy", "stopped", "restarting")),
+        }
+    return out

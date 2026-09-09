@@ -32,7 +32,7 @@ log = logging.getLogger("diagnostics")
 
 # Metric label -> the focus argument passed to the remote script.
 _FOCUS_BY_LABEL = {"CPU": "cpu", "Memory": "memory", "Disk": "disk"}
-_ALLOWED_FOCUS = {"cpu", "memory", "disk", "service", "all"}
+_ALLOWED_FOCUS = {"cpu", "memory", "disk", "service", "containers", "all"}
 
 
 def enabled() -> bool:
@@ -90,6 +90,16 @@ def _run_remote(host: str, focus: str, role: str = "") -> str | None:
             client.close()
         except Exception:
             pass
+
+
+def run_focus(host: str, focus: str, role: str = "") -> str | None:
+    """Public entry point for one remote focus.
+
+    containers.py needs the same SSH path (same user, same single whitelisted
+    sudo command, same per-role port) without reaching into a private helper, and
+    without gaining any capability the breach-evidence path does not already have.
+    """
+    return _run_remote(host, focus, role)
 
 
 def _hosts_for_instances(instance_ids: set) -> dict:

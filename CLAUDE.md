@@ -52,6 +52,16 @@ dashboard shows everything grouped by environment. Access is gated by SSO
   public client)**: `/auth/oidc/login` + `/auth/oidc/callback`; plus
   `/auth/dev-login`, `/auth/info` (public), `/auth/login`+`/auth/logout` (redirect
   to `FRONTEND_URL`). `init_oauth(app)` registers the client.
+- `Backend/cloudspec.py` - provider-reported **specs** (vCPU/RAM/disk/type/status)
+  via ECS `DescribeInstances`+`DescribeDisks` and RDS `DescribeDBInstanceAttribute`;
+  cached on the Instance row, refreshed every `SPECS_REFRESH_HOURS`. Gives each
+  percentage a denominator - "95% memory" reads differently on 4 GB than 64 GB.
+- `Backend/containers.py` - **docker workloads** each host reports, over the same
+  least-privilege SSH path as diagnostics (`cam-diag containers`, one extra
+  allow-listed focus). Answers "what does the box say is running, and does docker
+  call it healthy?", which is how an unhealthy-but-listening container or a
+  restart loop becomes visible; `healthcheck.py` only sees reachability. Needs the
+  `DIAG_SSH_*` identity; collects nothing (and says so) without it.
 - `Backend/config.py` - env settings + `METRIC_TEMPLATES`, `SERVICE_CHECKS_BY_ROLE`,
   `INSTANCE_GROUPS` (seed only), `build_metrics()`/`build_service_checks()`.
 - `Backend/seed.py` - `flask seed` (idempotent: groups/instances/dev-user).
@@ -67,6 +77,9 @@ PATCH/DELETE `/api/instances/<id>` | GET `/auth/oidc/login` +
 `/auth/login` (→ FE login), `/auth/logout`.
 All routes require login except `/api/health`, `/api/ready`, and `/auth/*`.
 `/api/*` returns 401 JSON when anonymous. Login/SSO redirect to `FRONTEND_URL`.
+`/api/status` also carries `instances: {id: {spec, containers, ...}}` - current
+state per instance, kept out of the scan document so specs and container lists
+are not duplicated onto every metric row and every history entry.
 
 ## Run / dev
 - Easiest: `docker compose up --build` = fe (**:8080**) + app API (**:5000**) +

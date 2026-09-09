@@ -118,6 +118,25 @@ SCAN_CONCURRENCY = int(os.getenv("SCAN_CONCURRENCY", "8"))
 # "healthy" because a None value is never compared against its threshold.
 METRIC_LOOKBACK_MINUTES = _int("METRIC_LOOKBACK_MINUTES", 15)
 
+# --- Instance specification (cloudspec.py) -----------------------------------
+# vCPU/RAM/disk come from the owning product's describe API (ECS DescribeInstances
+# + DescribeDisks, RDS DescribeDBInstanceAttribute), which needs ecs:Describe* /
+# rds:DescribeDBInstanceAttribute on the RAM user. Hardware does not change every
+# five minutes, so specs are cached on the instance row and refreshed this often.
+SPECS_REFRESH_HOURS = _int("SPECS_REFRESH_HOURS", 6)
+
+# --- Docker workloads (containers.py) ----------------------------------------
+# Collected over the SAME least-privilege SSH path as diagnostics (one extra
+# allow-listed focus), so it needs the DIAG_SSH_* identity configured. Only these
+# roles are asked - a managed RDS instance has no shell, and a router or a Windows
+# box has no docker.
+CONTAINERS_ENABLED = _b("CONTAINERS_ENABLED", True)
+CONTAINER_ROLES = tuple(
+    r.strip().lower() for r in
+    _clean(os.getenv("CONTAINER_ROLES", "frontend,backend,db,web")).split(",")
+    if r.strip()
+)
+
 # Treat a metric that STOPS reporting as a problem worth alerting on, rather than
 # silently healthy. Only applies to metrics that had a value in the previous scan,
 # so a box with no CloudMonitor agent (permanently blank memory/disk) stays quiet;

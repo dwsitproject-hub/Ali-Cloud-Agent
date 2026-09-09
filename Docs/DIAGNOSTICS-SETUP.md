@@ -280,6 +280,28 @@ printf '%s\n' \
 grep '^DIAG_' .env
 ```
 
+### The dashboard's "Docker services" panel uses this same setup
+
+Once the SSH identity below works, the dashboard shows every container each host
+reports, with its docker health state (`healthy`, `unhealthy`, `restarting`,
+`stopped`). That comes from one extra allow-listed focus, `cam-diag containers`,
+which runs a single `docker ps` and prints nothing else - no new privilege beyond
+what breach evidence already needs.
+
+Two consequences worth knowing:
+
+* **Re-install `cam-diag.sh` on every host after upgrading the app.** An older
+  copy does not know the `containers` argument and falls back to printing the full
+  human-readable report, which the parser will discard - the panel stays empty
+  with no obvious error.
+* It runs **every scan cycle**, not only on a breach, so keep the host script
+  current; `CAM_DIAG_MAX_CONTAINERS` (default 60) bounds the output, and
+  `CONTAINER_ROLES` keeps the monitor from asking hosts that have no docker (a
+  managed RDS instance, a router, a Windows box).
+
+Set `CONTAINERS_ENABLED=false` to turn the panel off while leaving breach
+diagnostics enabled.
+
 **`DIAG_SSH_PORT` is deliberately absent above.** Left unset, diagnostics
 connects on the same port as that role's SSH *probe* - `PROBE_SSH_PORT`, or
 `PROBE_<ROLE>_SSH_PORT` for a single role. A host whose sshd is not on 22 is

@@ -55,6 +55,20 @@ def run_scan_job(auto_alert=None) -> dict:
     if auto_alert:
         _maybe_auto_alert(scan)
 
+    # Instance specs (slow cadence, so this is usually a no-op) and the docker
+    # workload list. Both are dashboard context rather than alert inputs, so
+    # neither is allowed to break a scan cycle.
+    try:
+        import cloudspec
+        cloudspec.refresh_specs()
+    except Exception:
+        log.exception("instance spec refresh failed")
+    try:
+        import containers
+        containers.refresh()
+    except Exception:
+        log.exception("container collection failed")
+
     # Keep history bounded (runs every cycle; only rows past the retention
     # window are removed, so it is a cheap indexed delete most cycles).
     try:
