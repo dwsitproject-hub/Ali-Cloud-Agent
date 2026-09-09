@@ -6,7 +6,11 @@ read-only script, and embeds the result in the alert email — so the mail tells
 **which container/process** was responsible and **what activity** it was doing
 (including the actual SQL and how long it had been running).
 
-**Deploy branch: `UAT`** (the repository's default branch).
+**Deploy branch: whichever branch that server already runs.** `UAT` is the
+repository default, but the staging and production servers on this estate were
+deployed from **`SIT`** — check with `git -C /opt/ali-cloud-agent rev-parse
+--abbrev-ref HEAD` before any `git pull` below and use that branch, or you will
+roll the server back.
 
 ## Do it in this order
 
@@ -20,15 +24,36 @@ read-only script, and embeds the result in the alert email — so the mail tells
 
 ### Progress tracker
 
-Fill this in as you go — the key from Part 1 is the same for every host:
+Fill this in as you go. Part 1 runs **once per environment** (staging and production each have their own
+backend server, so each needs its own keypair). Part 2 runs per host.
 
-| Host | Role | 2a user | 2b script | 2c sudoers | 2d key | 2e verify | 2f port 22 |
+**Staging** — Part 1 done on the staging backend:
+
+| Host | Role | 2a user | 2b script | 2c sudoers | 2d key | 2e verify | 2f network |
 |---|---|---|---|---|---|---|---|
-| DB Staging | database | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ |
-| Backend Staging | app + monitor | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
-| Frontend Staging | web | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
+| DB Staging | database | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ :22 |
+| Backend Staging | app + monitor | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ :22 |
+| Frontend Staging | web | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ :22 |
 
-(Actual IPs for this estate are in the internal staging runbook, not in this repo.)
+> DB Staging was provisioned **before** the `containers` focus existed, so its
+> `/usr/local/bin/cam-diag` is stale — redo **2b** there (see the note in Part 3).
+
+**Production** — nothing done yet, including Part 1 on the production backend:
+
+| Host | Role | 2a user | 2b script | 2c sudoers | 2d key | 2e verify | 2f network |
+|---|---|---|---|---|---|---|---|
+| DB Production | database | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ **:22** |
+| Backend Production | app + monitor | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ **:1818** |
+| Frontend Production | web | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ **:1818** |
+
+> ⚠️ **sshd is on 1818 on the production FE and BE hosts**, and on 22 on the
+> production DB host. Every `ssh`/`scp` command below needs `-p 1818` (`-P` for
+> `scp`) on those two, and the security-group rule in 2f must open 1818, not 22.
+> The app itself already knows: `PROBE_FRONTEND_SSH_PORT` / `PROBE_BACKEND_SSH_PORT`
+> set the probe port and diagnostics follows it (see the `DIAG_SSH_PORT` note in
+> Part 3). It is only the manual verification commands that need the flag.
+
+(Actual IPs for this estate are in the internal runbooks, not in this repo.)
 
 ---
 
@@ -41,7 +66,7 @@ Fill this in as you go — the key from Part 1 is the same for every host:
 | It is **not** in the `docker` group | that group is root-equivalent; the single sudo entry is narrower |
 | The key only works from one source | `from="<BACKEND_IP>"` restriction in `authorized_keys` |
 | The script is **read-only** | inspects processes/containers/queries; changes nothing. Plain bash — review it before installing |
-| No app data reaches a shell | the only argument is a keyword validated against a fixed allow-list (`cpu`/`memory`/`disk`/`service`/`all`) |
+| No app data reaches a shell | the only argument is a keyword validated against a fixed allow-list (`cpu`/`memory`/`disk`/`service`/`containers`/`all`) |
 | Failures are contained | hard timeouts, max 3 hosts per alert; any error just means the alert falls back to generic guidance |
 
 The script is **`deploy/cam-diag.sh`** in this repo. Have each host owner read it.
@@ -107,7 +132,7 @@ path on all of them. Option 2 exists only for a host with no checkout at all.
 
 ```bash
 cd /opt/ali-cloud-agent
-git pull origin UAT
+git pull origin "$(git rev-parse --abbrev-ref HEAD)"
 ls -l deploy/cam-diag.sh                     # confirm the file is present
 install -m 0755 -o root -g root deploy/cam-diag.sh /usr/local/bin/cam-diag
 ```
@@ -118,7 +143,7 @@ Note the first command runs on the **backend**, the second on the target host:
 ```bash
 # 1) on the BACKEND server — set HOST_IP to the host you are provisioning:
 HOST_IP='10.0.0.56'
-scp /opt/ali-cloud-agent/deploy/cam-diag.sh root@"$HOST_IP":/tmp/
+scp -P 22 /opt/ali-cloud-agent/deploy/cam-diag.sh root@"$HOST_IP":/tmp/   # -P 1818 on prod FE/BE
 
 # 2) then on THAT host:
 install -m 0755 -o root -g root /tmp/cam-diag.sh /usr/local/bin/cam-diag
@@ -184,7 +209,9 @@ Expect `== HOST ==` / `== CPU SNAPSHOT ==`. *"sudo: a password is required"* mea
 
 ### 2f. Network
 
-Allow **the backend server's IP → this host `:22`** in the security group.
+Allow **the backend server's IP → this host's sshd port** in the security group.
+That is `:22` on most hosts but **`:1818` on the production FE and BE boxes** —
+check with `ss -tlnp | grep sshd` on the host rather than assuming.
 
 ### 2g. Confirm from the backend server
 
@@ -319,7 +346,7 @@ and want evidence from all of them.
 
 ```bash
 cd /opt/ali-cloud-agent
-git pull origin UAT
+git pull origin "$(git rev-parse --abbrev-ref HEAD)"
 docker compose -f docker-compose.app.yml up -d --build
 ```
 
