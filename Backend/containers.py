@@ -60,14 +60,28 @@ def classify(state: str, status: str) -> str:
     return state or "unknown"
 
 
+# The `containers` focus opens with this sentinel. Its absence means the host is
+# running a cam-diag from before that focus existed: an old copy does not
+# recognise the argument, silently falls back to FOCUS=all, and returns the full
+# human-readable report. Detecting that matters twice over - the panel would
+# otherwise sit empty with no explanation, AND the host would run the entire
+# diagnostic sweep every scan cycle instead of one cheap `docker ps`.
+_SENTINEL = "HOSTNAME\t"
+
+_STALE_SCRIPT = ("host script is too old to support the 'containers' focus - "
+                 "re-install deploy/cam-diag.sh on this host "
+                 "(Docs/DIAGNOSTICS-SETUP.md step 2b)")
+
+
 def parse(output: str) -> tuple:
     """``(containers, error)`` from the remote script's `containers` output.
 
     Tab-separated on purpose: image names carry ":" and "/", and Status carries
     spaces and parentheses, so neither is a safe delimiter.
     """
+    text = output or ""
     rows, error = [], None
-    for line in (output or "").splitlines():
+    for line in text.splitlines():
         parts = line.rstrip("\n").split("\t")
         if parts[0] == "ERR":
             error = parts[1] if len(parts) > 1 else "unknown error"
@@ -80,6 +94,9 @@ def parse(output: str) -> tuple:
             "name": name, "image": image, "state": state, "status": status,
             "health": classify(state, status), "ports": ports,
         })
+    if not rows and error is None and text.strip() and _SENTINEL not in text:
+        # Output, but not OUR output: an outdated host script (see _SENTINEL).
+        error = _STALE_SCRIPT
     rows.sort(key=lambda c: (c["health"] not in ("unhealthy", "stopped", "restarting"),
                              c["name"]))
     return rows, error

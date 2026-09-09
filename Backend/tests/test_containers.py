@@ -75,10 +75,23 @@ def test_problem_containers_sort_first():
     assert rows[0]["name"] == "zzz-broken"   # attention first, not alphabetical
 
 
-def test_parse_ignores_noise_and_empty():
-    rows, error = containers.parse("some banner text\n\n")
-    assert rows == [] and error is None
+def test_stale_host_script_is_reported_not_silently_empty():
+    """An old cam-diag does not know the `containers` argument, falls back to its
+    full report, and would leave the panel blank with no explanation - while making
+    the host run the whole diagnostic sweep every scan cycle."""
+    rows, error = containers.parse("== HOST ==\nhostname : ECS-App\n== CPU SNAPSHOT ==\n")
+    assert rows == []
+    assert error and "re-install" in error
+
+
+def test_empty_output_is_not_a_stale_script():
     assert containers.parse("") == ([], None)
+    assert containers.parse("   \n") == ([], None)
+
+
+def test_host_with_docker_but_no_containers_is_not_an_error():
+    rows, error = containers.parse("HOSTNAME\tDB-Production\n")
+    assert rows == [] and error is None
 
 
 def test_parse_tolerates_missing_ports_column():
