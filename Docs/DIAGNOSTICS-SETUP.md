@@ -27,36 +27,72 @@ roll the server back.
 Fill this in as you go. Part 1 runs **once per environment** (staging and production each have their own
 backend server, so each needs its own keypair). Part 2 runs per host.
 
-**Staging** — Part 1 done on the staging backend:
+**Staging** — ✅ **complete**, and every staging host trusts **both** monitors:
 
-| Host | Role | 2a user | 2b script | 2c sudoers | 2d key | 2e verify | 2f network |
+| Host | Role | 2a | 2b | 2c | 2d | 2e | network |
 |---|---|---|---|---|---|---|---|
 | DB Staging | database | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ :22 |
-| Backend Staging | app + monitor | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ :22 |
-| Frontend Staging | web | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ :22 |
-
-> DB Staging was provisioned **before** the `containers` focus existed, so its
-> `/usr/local/bin/cam-diag` is stale — redo **2b** there (see the note in Part 3).
+| Backend Staging | app + monitor | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ :22 |
+| Frontend Staging | web | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ :22 |
 
 **Production** — ✅ **complete**. Part 1, all three hosts, and Part 3 done;
 verified in-container against all three (`enabled: True`, 3/3 OK).
 
-| Host | Role | 2a user | 2b script | 2c sudoers | 2d key | 2e verify | 2f network |
+| Host | Role | 2a | 2b | 2c | 2d | 2e | network |
 |---|---|---|---|---|---|---|---|
 | DB Production | database | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ **:22** |
 | Backend Production | app + monitor | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ **:1818** |
 | Frontend Production | web | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ **:1818** |
 
-> **2f needed no work on production.** All three hosts' SSH *probes* are green
-> (`services_down=0/20`), which already proves the BE container can reach
-> FE:1818, BE:1818 and DB:22 — the same ports diagnostics uses.
->
-> ⚠️ **sshd is on 1818 on the production FE and BE hosts**, and on 22 on the
-> production DB host. Every `ssh`/`scp` command below needs `-p 1818` (`-P` for
-> `scp`) on those two, and the security-group rule in 2f must open 1818, not 22.
-> The app itself already knows: `PROBE_FRONTEND_SSH_PORT` / `PROBE_BACKEND_SSH_PORT`
-> set the probe port and diagnostics follows it (see the `DIAG_SSH_PORT` note in
-> Part 3). It is only the manual verification commands that need the flag.
+### Why staging hosts carry TWO keys
+
+Production is the estate's only alerting source (see the production runbook §11),
+so it is production that needs to collect evidence when a *staging* instance
+breaches. The staging monitor separately needs access for its own dashboard's
+docker panel. Each staging host therefore holds:
+
+| `from=` | Key | Purpose |
+|---|---|---|
+| `172.28.92.57` | staging | the staging monitor, reaching other hosts |
+| `192.168.32.0/20` | staging | the staging monitor reaching **its own host** (Backend Staging only) |
+| `172.28.80.51` | production | breach diagnostics from the alerting monitor |
+
+Verified from the production BE, passing instance ids so the
+`PROBE_SSH_PORT_OVERRIDES` path is exercised — production's `frontend`/`backend`
+roles default to 1818, and only the per-instance override reaches staging's 22:
+
+```bash
+docker exec cloud-agent-app python -c "
+import diagnostics as d
+for host, role, iid in (('172.28.92.60','db','i-k1ab5rh48e40enbqa7ii'),('172.28.92.56','frontend','i-k1a5ja5hi7ps6aa7x88r'),('172.28.92.57','backend','i-k1a4m0oobaw170notm7p')):
+    out = d.run_focus(host,'containers',role,iid)
+    print(host, role, '->', 'OK' if out and 'HOSTNAME' in out else 'FAILED')
+"
+```
+
+### Two things learned provisioning six hosts
+
+**Container subnets are per project and differ per host.** Production BE detected
+`172.25.0.0/16`; Backend Staging detected `192.168.32.0/20`. Never assume the
+usual `172.17`/`172.18` — always run the detection command, and re-run it if the
+network is ever recreated, or that host silently stops reporting.
+
+**Partially-provisioned hosts produce duplicate `authorized_keys` lines.** Four of
+the six hosts already had a `cloudmonitor` user from an earlier attempt, so
+appending produced duplicates (Backend Staging ended with 6 lines for 3 distinct
+entries). Harmless — sshd takes the first match — but confusing during an
+incident. Check and dedupe:
+
+```bash
+grep -no 'from="[^"]*"' /home/cloudmonitor/.ssh/authorized_keys
+```
+
+```bash
+awk '!seen[$0]++' /home/cloudmonitor/.ssh/authorized_keys > /tmp/ak && mv /tmp/ak /home/cloudmonitor/.ssh/authorized_keys && chown cloudmonitor:cloudmonitor /home/cloudmonitor/.ssh/authorized_keys && chmod 600 /home/cloudmonitor/.ssh/authorized_keys && grep -o 'from="[^"]*"' /home/cloudmonitor/.ssh/authorized_keys
+```
+
+Watch for a *stale* subnet in that listing — a `from=` for a subnet the current
+network no longer uses is dead weight that stops working silently.
 
 (Actual IPs for this estate are in the internal runbooks, not in this repo.)
 
