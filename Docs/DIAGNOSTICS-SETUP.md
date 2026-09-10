@@ -43,8 +43,8 @@ backend server, so each needs its own keypair). Part 2 runs per host.
 | Host | Role | 2a user | 2b script | 2c sudoers | 2d key | 2e verify | 2f network |
 |---|---|---|---|---|---|---|---|
 | DB Production | database | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ **:22** |
-| Backend Production | app + monitor | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ **:1818** |
-| Frontend Production | web | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ **:1818** |
+| Backend Production | app + monitor | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ **:1818** |
+| Frontend Production | web | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ **:1818** |
 
 > **2f needed no work on production.** All three hosts' SSH *probes* are green
 > (`services_down=0/20`), which already proves the BE container can reach
@@ -280,7 +280,16 @@ wc -l /home/cloudmonitor/.ssh/authorized_keys      # expect 2
 ```
 
 The subnet is Docker-internal and not routable from outside the host, so this remains
-least-privilege. Re-running the container-side check should then report `OK` for the
+least-privilege. On the production BE it detected `172.25.0.0/16` — do not assume
+the usual `172.17`/`172.18`; Compose allocates per project, and the value changes
+if the network is recreated, which would silently break collection for that one
+host. Re-run the detection command if `docker network prune` or a
+`docker compose down` has removed the network since.
+
+**Do not use 2g to verify this host.** `ssh` from its own shell to its own IP
+carries the host's source address, so it matches the FIRST line and passes even
+if the subnet line is wrong or missing. Only the in-container check (3e) proves
+it. Re-running the container-side check should then report `OK` for the
 backend's own IP.
 
 **Frontend / non-database hosts** — everything works except the PostgreSQL
