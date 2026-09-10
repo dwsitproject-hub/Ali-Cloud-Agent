@@ -108,6 +108,19 @@ PUBKEY='ssh-ed25519 AAAA...replace-with-Part-1-output... cloud-agent-diag'
 
 > ⚠️ Never paste `<SOMETHING>` into a shell — bash reads `<` as an input redirect
 > and fails with `No such file or directory`. That is why these are variables.
+>
+> ⚠️ **Shell variables die with the session.** A web terminal (ECS Workbench)
+> hands you a new session on reconnect or in a new tab, and these variables are
+> then empty — step 2d silently writes `from="",...` with no key, producing a
+> malformed `authorized_keys` line that grants nothing and is easy to miss because
+> every command still "succeeds". Either re-paste 2·0 in the session you are
+> actually using, or paste 2d with the values written in literally. Check with
+> `cat /home/cloudmonitor/.ssh/authorized_keys` — an entry with `from=""` or no
+> `ssh-ed25519 AAAA...` portion must be removed:
+>
+> ```bash
+> sed -i '/^from="",/d' /home/cloudmonitor/.ssh/authorized_keys
+> ```
 
 ### 2a. Create the unprivileged user
 
