@@ -49,7 +49,7 @@
          border:1px solid var(--line); border-radius:999px; color:var(--txt); }
   /* Instance specification line: the denominator for every percentage above. */
   .spec { display:flex; flex-wrap:wrap; gap:10px; margin:2px 0 8px; font-size:11.5px; color:var(--mut); }
-  .spec b { color:var(--fg); font-weight:600; }
+  .spec b { color:var(--txt); font-weight:600; }
   .spec .prov-stopped { color:var(--bad); font-weight:600; }
   /* Docker workloads reported by the host itself. */
   .ctrs { display:flex; flex-direction:column; gap:3px; }
@@ -58,7 +58,7 @@
   .ctr.healthy .dot, .ctr.running .dot { background:var(--ok); }
   .ctr.unhealthy .dot, .ctr.stopped .dot { background:var(--bad); }
   .ctr.restarting .dot, .ctr.starting .dot, .ctr.paused .dot, .ctr.created .dot { background:#d9a520; }
-  .ctr-name { font-weight:600; color:var(--fg); }
+  .ctr-name { font-weight:600; color:var(--txt); }
   .ctr-img { color:var(--mut); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:150px; }
   .ctr-state { margin-left:auto; color:var(--mut); white-space:nowrap; }
   .ctr.unhealthy .ctr-state, .ctr.stopped .ctr-state { color:var(--bad); }
@@ -219,8 +219,9 @@ function containersBlock(det){
   }
   if(!list.length) return '';
   const bad = det.containers_attention || 0;
-  const label = bad ? `Docker services &mdash; <span style="color:var(--bad)">${bad} need attention</span>`
-                    : `Docker services &mdash; ${list.length} running`;
+  const label = bad
+    ? `Docker services &mdash; <span style="color:var(--bad)">${bad} need${bad===1?'s':''} attention</span>`
+    : `Docker services &mdash; ${list.length} running`;
   return `<div class="sec-label">${label}</div><div class="ctrs">${list.map(ctrRow).join('')}</div>`;
 }
 
@@ -248,14 +249,16 @@ function renderCards(scan, details){
     const cards = Object.values(insts).map(inst=>{
       const svcs = svcByInst[inst.id]||[];
       const anyDown = svcs.some(s=>s.up===false);
+      const det = details[inst.id];
+      // A container docker calls unhealthy, or one in a restart loop, is a real
+      // problem even when every metric is green and the port still answers.
+      // Declared BEFORE `problem` uses it: `const` is not hoisted, so reading it
+      // earlier throws a ReferenceError that takes the whole dashboard down.
+      const ctrProblem = ((det && det.containers_attention) || 0) > 0;
       const problem = inst.metrics.some(m=>m.breached) || anyDown || ctrProblem;
       const svcBlock = svcs.length
         ? `<div class="sec-label">Reachability</div><div class="services">${svcs.map(svcPill).join('')}</div>`
         : '';
-      const det = details[inst.id];
-      // A container docker calls unhealthy, or one in a restart loop, is a real
-      // problem even when every metric is green and the port still answers.
-      const ctrProblem = (det && det.containers_attention) > 0;
       return `<div class="card ${problem?'breach':''}">
         <div class="inst-head">
           <div>
@@ -274,7 +277,7 @@ function renderCards(scan, details){
     const summ = [`${instCount} instance${instCount!==1?'s':''}`];
     if(gBreaches) summ.push(`<span style="color:var(--bad)">${gBreaches} breach</span>`);
     if(gDown) summ.push(`<span style="color:var(--bad)">${gDown} svc down</span>`);
-    if(gCtr) summ.push(`<span style="color:var(--bad)">${gCtr} container${gCtr!==1?'s':''}</span>`);
+    if(gCtr) summ.push(`<span style="color:var(--bad)">${gCtr} container${gCtr!==1?'s':''} need${gCtr===1?'s':''} attention</span>`);
     if(!gBreaches && !gDown && !gCtr) summ.push('all ok');
     return `<section class="group">
       <div class="group-head">
