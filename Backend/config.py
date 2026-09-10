@@ -222,6 +222,25 @@ SESSION_COOKIE_SAMESITE = os.getenv(
 # A single origin (used for post-login redirects). Defensive: if someone
 # comma-joins values (that's CORS_ORIGINS' job, not this), take the first.
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:8080").split(",")[0].strip().rstrip("/")
+
+
+def probe_http_host() -> str:
+    """Hostname to send as the `Host` header when probing the frontend server.
+
+    A shared nginx routes by `server_name`. Probing it by IP sends `Host: <ip>`,
+    which matches no vhost, so nginx answers from its DEFAULT server - usually a
+    404 that reports as an outage while the real site is fine. This is exactly the
+    false "Frontend Staging HTTP DOWN / unexpected status 404" alert.
+
+    Defaults to the hostname of FRONTEND_URL, which IS the vhost this deployment
+    serves, so it is correct without configuration. PROBE_FE_HTTP_HOST overrides;
+    set it empty to go back to probing by IP.
+    """
+    override = os.getenv("PROBE_FE_HTTP_HOST")
+    if override is not None:
+        return _clean(override)
+    from urllib.parse import urlsplit
+    return (urlsplit(FRONTEND_URL).hostname or "").strip()
 # Browser origins allowed to call this API with credentials (comma-separated).
 # Defaults to FRONTEND_URL. Never use "*" with credentials.
 CORS_ORIGINS = [
@@ -395,7 +414,8 @@ SERVICE_CHECKS_BY_ROLE = {
     ],
     "frontend": [
         {"name": "HTTP", "type": "http", "scheme": "http",
-         "port": _int("PROBE_FE_HTTP_PORT", 80), "path": "/", "expect": [200, 301, 302]},
+         "port": _int("PROBE_FE_HTTP_PORT", 80), "path": "/", "expect": [200, 301, 302],
+         "host_header": probe_http_host()},
         # No HTTPS check by default — staging is HTTP-only, so a 443 probe would
         # report a false outage. Set PROBE_FE_HTTPS=true once TLS is in place.
         *([{"name": "HTTPS", "type": "http", "scheme": "https", "port": 443,
@@ -487,6 +507,8 @@ def build_service_checks(instances: list) -> list:
                 "scheme": svc.get("scheme", "http"),
                 "path": svc.get("path", "/"),
                 "expect": svc.get("expect", [200]),
+                # Only set for name-based vhosts; None means "probe by IP".
+                "host_header": svc.get("host_header") or None,
             })
     return checks
 

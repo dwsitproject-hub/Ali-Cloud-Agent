@@ -126,6 +126,14 @@ are not duplicated onto every metric row and every history entry.
   metric that *stops* reporting (`ALERT_ON_NO_DATA`, on by default; only for
   metrics that had a value in the previous run, so agent-less hosts stay quiet).
   `agent2_alerter._stopped_section()` names them in the email.
+- **An HTTP probe by IP hits nginx's *default* vhost.** A shared nginx routes on
+  `server_name`; `Host: <ip>` matches none, so it answers from the default server -
+  typically a 404 the probe reports as an outage while the site is healthy (this
+  produced a recurring false "Frontend Staging HTTP DOWN / unexpected status 404").
+  `config.probe_http_host()` supplies the real hostname (from `FRONTEND_URL`, or
+  `PROBE_FE_HTTP_HOST`) as a `Host` header, so the probe tests the vhost we serve
+  over the same IP. 404 is still down - the fix targets the right vhost rather than
+  widening what counts as healthy.
 - **Some metrics return one series per device.** `diskusage_utilization` reports
   every filesystem, so `_pick_point()` takes the *worst* value at the newest
   timestamp (max for `>` rules, min for `<`). Taking whichever sorted last could
