@@ -38,7 +38,8 @@ backend server, so each needs its own keypair). Part 2 runs per host.
 > DB Staging was provisioned **before** the `containers` focus existed, so its
 > `/usr/local/bin/cam-diag` is stale — redo **2b** there (see the note in Part 3).
 
-**Production** — Part 1 done on the production backend (`172.28.80.51`):
+**Production** — ✅ **complete**. Part 1, all three hosts, and Part 3 done;
+verified in-container against all three (`enabled: True`, 3/3 OK).
 
 | Host | Role | 2a user | 2b script | 2c sudoers | 2d key | 2e verify | 2f network |
 |---|---|---|---|---|---|---|---|

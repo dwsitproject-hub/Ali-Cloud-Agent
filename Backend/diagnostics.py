@@ -77,6 +77,17 @@ def _run_remote(host: str, focus: str, role: str = "") -> str | None:
         _in, out, err = client.exec_command(cmd, timeout=config.DIAG_TIMEOUT)
         text = out.read().decode("utf-8", "replace").strip()
         problem = err.read().decode("utf-8", "replace").strip()
+        # Close the streams while the transport is still alive. Left to the
+        # garbage collector, their __del__ can run after `finally` has closed the
+        # client, and paramiko then raises inside __del__ ("'NoneType' object has
+        # no attribute 'time'"). Python only prints that as an ignored exception,
+        # so it breaks nothing - it just writes a traceback into the logs of a
+        # long-running process for no reason.
+        for stream in (_in, out, err):
+            try:
+                stream.close()
+            except Exception:
+                pass
         if not text:
             return f"(no output; stderr: {problem[:300]})" if problem else None
         if len(text) > config.DIAG_MAX_CHARS:
