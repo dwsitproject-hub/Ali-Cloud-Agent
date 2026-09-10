@@ -38,14 +38,18 @@ backend server, so each needs its own keypair). Part 2 runs per host.
 > DB Staging was provisioned **before** the `containers` focus existed, so its
 > `/usr/local/bin/cam-diag` is stale — redo **2b** there (see the note in Part 3).
 
-**Production** — nothing done yet, including Part 1 on the production backend:
+**Production** — Part 1 done on the production backend (`172.28.80.51`):
 
 | Host | Role | 2a user | 2b script | 2c sudoers | 2d key | 2e verify | 2f network |
 |---|---|---|---|---|---|---|---|
-| DB Production | database | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ **:22** |
+| DB Production | database | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ **:22** |
 | Backend Production | app + monitor | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ **:1818** |
 | Frontend Production | web | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ **:1818** |
 
+> **2f needed no work on production.** All three hosts' SSH *probes* are green
+> (`services_down=0/20`), which already proves the BE container can reach
+> FE:1818, BE:1818 and DB:22 — the same ports diagnostics uses.
+>
 > ⚠️ **sshd is on 1818 on the production FE and BE hosts**, and on 22 on the
 > production DB host. Every `ssh`/`scp` command below needs `-p 1818` (`-P` for
 > `scp`) on those two, and the security-group rule in 2f must open 1818, not 22.
