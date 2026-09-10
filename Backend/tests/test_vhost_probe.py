@@ -103,3 +103,70 @@ def test_target_names_the_vhost_that_was_asked_for(monkeypatch):
     assert result["up"] is False
     # "404 at this IP" and "404 for this vhost" are different diagnoses.
     assert "Host: app.example.com" in result["target"]
+
+
+# --- per-instance overrides -------------------------------------------------
+# One monitor watching two environments means one role spans two conventions:
+# production's `frontend` role wants sshd on 1818 and the cloud-monitoring vhost,
+# while Frontend Staging wants 22 and the test-cloud-monitoring vhost. Without an
+# escape hatch, pointing production at staging guarantees false outages.
+FE_STAGING = "i-k1a5ja5hi7ps6aa7x88r"
+FE_PROD = "i-k1ad3kyn8xfme3vsx78c"
+
+
+def test_ssh_port_override_beats_the_role(monkeypatch):
+    monkeypatch.setenv("PROBE_FRONTEND_SSH_PORT", "1818")
+    monkeypatch.setattr(config, "PROBE_SSH_PORT_OVERRIDES", {FE_STAGING: "22"})
+    assert config.ssh_port_for_instance({"id": FE_STAGING, "role": "frontend"}) == 22
+    assert config.ssh_port_for_instance({"id": FE_PROD, "role": "frontend"}) == 1818
+
+
+def test_ssh_port_override_ignores_garbage(monkeypatch):
+    monkeypatch.setenv("PROBE_FRONTEND_SSH_PORT", "1818")
+    monkeypatch.setattr(config, "PROBE_SSH_PORT_OVERRIDES", {FE_STAGING: "not-a-port"})
+    assert config.ssh_port_for_instance({"id": FE_STAGING, "role": "frontend"}) == 1818
+
+
+def test_http_host_override_beats_the_role(monkeypatch):
+    monkeypatch.setattr(config, "PROBE_HTTP_HOST_OVERRIDES",
+                        {FE_STAGING: "test-cloud-monitoring.kpndomain.com"})
+    assert config.http_host_for_instance({"id": FE_STAGING},
+                                         "cloud-monitoring.kpndomain.com") \
+        == "test-cloud-monitoring.kpndomain.com"
+    assert config.http_host_for_instance({"id": FE_PROD},
+                                         "cloud-monitoring.kpndomain.com") \
+        == "cloud-monitoring.kpndomain.com"
+
+
+def test_overrides_reach_the_built_checks(monkeypatch):
+    monkeypatch.setattr(config, "PROBE_SSH_PORT_OVERRIDES", {FE_STAGING: "22"})
+    monkeypatch.setattr(config, "PROBE_HTTP_HOST_OVERRIDES",
+                        {FE_STAGING: "test-cloud-monitoring.kpndomain.com"})
+    built = {c["name"]: c for c in config.build_service_checks([
+        {"id": FE_STAGING, "name": "Frontend Staging", "role": "frontend",
+         "host": "172.28.92.56", "group": "Staging"}])}
+    assert built["SSH"]["port"] == 22
+    assert built["HTTP"]["host_header"] == "test-cloud-monitoring.kpndomain.com"
+
+
+def test_instances_without_an_override_keep_role_defaults(monkeypatch):
+    monkeypatch.setattr(config, "PROBE_SSH_PORT_OVERRIDES", {FE_STAGING: "22"})
+    built = {c["name"]: c for c in config.build_service_checks([
+        {"id": FE_PROD, "name": "Frontend Production", "role": "frontend",
+         "host": "172.28.80.50", "group": "Production"}])}
+    assert built["SSH"]["port"] == config.ssh_port_for_role("frontend")
+
+
+def test_id_map_parsing(monkeypatch):
+    monkeypatch.setenv("X_MAP", " i-aaa:22 , i-bbb:1818 ,, junk , i-ccc: ")
+    assert config._id_map("X_MAP") == {"i-aaa": "22", "i-bbb": "1818"}
+    monkeypatch.setenv("X_MAP", "")
+    assert config._id_map("X_MAP") == {}
+
+
+def test_diagnostics_port_follows_the_instance_override(monkeypatch):
+    monkeypatch.setenv("PROBE_FRONTEND_SSH_PORT", "1818")
+    monkeypatch.setattr(config, "PROBE_SSH_PORT_OVERRIDES", {FE_STAGING: "22"})
+    monkeypatch.setattr(config, "DIAG_SSH_PORT_RAW", "")
+    assert config.diag_ssh_port_for_instance({"id": FE_STAGING, "role": "frontend"}) == 22
+    assert config.diag_ssh_port_for_instance({"id": FE_PROD, "role": "frontend"}) == 1818

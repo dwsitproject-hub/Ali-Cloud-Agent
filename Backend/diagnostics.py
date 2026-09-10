@@ -39,7 +39,7 @@ def enabled() -> bool:
     return bool(config.DIAG_ENABLED and config.DIAG_SSH_USER and config.DIAG_SSH_KEY)
 
 
-def _run_remote(host: str, focus: str, role: str = "") -> str | None:
+def _run_remote(host: str, focus: str, role: str = "", instance_id: str = "") -> str | None:
     """SSH to ``host`` and return the diagnostic text, or None on failure.
 
     ``role`` selects the SSH port via ``config.ssh_port_for_role`` so evidence
@@ -64,7 +64,7 @@ def _run_remote(host: str, focus: str, role: str = "") -> str | None:
     try:
         client.connect(
             hostname=host,
-            port=config.diag_ssh_port_for_role(role),
+            port=config.diag_ssh_port_for_instance({"id": instance_id, "role": role}),
             username=config.DIAG_SSH_USER,
             key_filename=config.DIAG_SSH_KEY,
             timeout=config.DIAG_TIMEOUT,
@@ -103,14 +103,14 @@ def _run_remote(host: str, focus: str, role: str = "") -> str | None:
             pass
 
 
-def run_focus(host: str, focus: str, role: str = "") -> str | None:
+def run_focus(host: str, focus: str, role: str = "", instance_id: str = "") -> str | None:
     """Public entry point for one remote focus.
 
     containers.py needs the same SSH path (same user, same single whitelisted
     sudo command, same per-role port) without reaching into a private helper, and
     without gaining any capability the breach-evidence path does not already have.
     """
-    return _run_remote(host, focus, role)
+    return _run_remote(host, focus, role, instance_id)
 
 
 def _hosts_for_instances(instance_ids: set) -> dict:
@@ -122,7 +122,8 @@ def _hosts_for_instances(instance_ids: set) -> dict:
     try:
         from models import Instance
         rows = Instance.query.filter(Instance.id.in_(list(instance_ids))).all()
-        return {r.id: {"host": (r.host or "").strip(), "role": (r.role or "").strip()}
+        return {r.id: {"id": r.id, "host": (r.host or "").strip(),
+                       "role": (r.role or "").strip()}
                 for r in rows if (r.host or "").strip()}
     except Exception as exc:
         log.warning("diagnostics: could not resolve hosts: %s", exc)
@@ -167,7 +168,7 @@ def collect_for_scan(scan: dict) -> dict:
             continue      # no probe host configured for this instance
         focuses = meta["focuses"]
         focus = focuses.pop() if len(focuses) == 1 else "all"
-        output = _run_remote(host, focus, target.get("role", ""))
+        output = _run_remote(host, focus, target.get("role", ""), iid)
         if output:
             results[meta["name"]] = {"host": host, "focus": focus, "output": output}
             log.info("diagnostics collected from %s (%s)", host, focus)

@@ -106,7 +106,7 @@ def _collect_one(target: tuple) -> tuple:
     """``(instance_id, containers, error)`` for one host."""
     inst_id, host, role = target
     import diagnostics
-    output = diagnostics.run_focus(host, "containers", role)
+    output = diagnostics.run_focus(host, "containers", role, inst_id)
     if output is None:
         return inst_id, [], "SSH collection failed (see backend log)"
     rows, error = parse(output)

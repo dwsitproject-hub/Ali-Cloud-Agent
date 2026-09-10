@@ -126,6 +126,14 @@ are not duplicated onto every metric row and every history entry.
   metric that *stops* reporting (`ALERT_ON_NO_DATA`, on by default; only for
   metrics that had a value in the previous run, so agent-less hosts stay quiet).
   `agent2_alerter._stopped_section()` names them in the email.
+- **Probe settings are per ROLE, which one monitor watching two environments
+  breaks.** The production monitor's `frontend` role uses sshd 1818 and the
+  production vhost; a staging frontend in the same inventory needs 22 and the
+  staging vhost. `PROBE_SSH_PORT_OVERRIDES` / `PROBE_HTTP_HOST_OVERRIDES`
+  (`instance-id:value,...`) let one instance deviate, via
+  `config.ssh_port_for_instance()` / `http_host_for_instance()`; diagnostics
+  follows through `diag_ssh_port_for_instance()`. Env maps rather than columns:
+  no migration, no UI, and they sit beside the `PROBE_*` settings they override.
 - **An HTTP probe by IP hits nginx's *default* vhost.** A shared nginx routes on
   `server_name`; `Host: <ip>` matches none, so it answers from the default server -
   typically a 404 the probe reports as an outage while the site is healthy (this

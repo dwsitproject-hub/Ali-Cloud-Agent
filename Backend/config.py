@@ -374,6 +374,48 @@ def metric_templates_for(inst: dict) -> list:
 # Ports below are overridable per role via env so a probe can be corrected without
 # a code change; the defaults match this estate (Postgres not MySQL, the API on
 # APP_HOST_PORT, and no TLS on the frontend yet).
+def _id_map(name: str) -> dict:
+    """Parse `id:value,id:value` per-instance probe overrides.
+
+    Probe settings are per ROLE, which breaks as soon as one monitor watches two
+    environments: the production monitor's `frontend` role puts sshd on 1818 and
+    the vhost at cloud-monitoring.kpndomain.com, but Frontend *Staging* uses 22
+    and test-cloud-monitoring.kpndomain.com. Without a per-instance escape hatch,
+    pointing production at the staging boxes produces guaranteed false outages -
+    refused SSH on the wrong port, and a 404 from nginx's default vhost.
+
+    An env map rather than a column: it needs no migration, no UI, and it sits
+    next to the other PROBE_* settings it overrides.
+    """
+    out = {}
+    for pair in _clean(os.getenv(name, "")).split(","):
+        key, _, value = pair.strip().partition(":")
+        key, value = key.strip(), value.strip()
+        if key and value:
+            out[key] = value
+    return out
+
+
+PROBE_SSH_PORT_OVERRIDES = _id_map("PROBE_SSH_PORT_OVERRIDES")
+PROBE_HTTP_HOST_OVERRIDES = _id_map("PROBE_HTTP_HOST_OVERRIDES")
+
+
+def ssh_port_for_instance(inst: dict) -> int:
+    """SSH port for ONE instance: its override, else its role's port, else 22."""
+    raw = PROBE_SSH_PORT_OVERRIDES.get((inst.get("id") or "").strip())
+    if raw:
+        try:
+            return int(raw)
+        except ValueError:
+            pass
+    return ssh_port_for_role(inst.get("role", ""))
+
+
+def http_host_for_instance(inst: dict, default: str) -> str:
+    """`Host` header for ONE instance's HTTP probe, else the role default."""
+    return PROBE_HTTP_HOST_OVERRIDES.get((inst.get("id") or "").strip()) or default
+
+
 def ssh_port_for_role(role: str) -> int:
     """SSH port for one role: PROBE_<ROLE>_SSH_PORT, else PROBE_SSH_PORT, else 22.
 
@@ -389,6 +431,17 @@ def ssh_port_for_role(role: str) -> int:
     default = _int("PROBE_SSH_PORT", 22)
     role = (role or "").strip().lower()
     return _int(f"PROBE_{role.upper()}_SSH_PORT", default) if role else default
+
+
+def diag_ssh_port_for_instance(inst: dict) -> int:
+    """Diagnostics SSH port for ONE instance - honours the per-instance override
+    so a corrected probe port fixes evidence collection on that host too."""
+    if DIAG_SSH_PORT_RAW:
+        try:
+            return int(DIAG_SSH_PORT_RAW)
+        except ValueError:
+            pass
+    return ssh_port_for_instance(inst)
 
 
 def diag_ssh_port_for_role(role: str) -> int:
@@ -495,6 +548,13 @@ def build_service_checks(instances: list) -> list:
     for inst in instances:
         host = (inst.get("host") or "").strip()
         for svc in SERVICE_CHECKS_BY_ROLE.get(inst.get("role", ""), []):
+            # Role defaults, then this instance's overrides (see _id_map).
+            port = svc.get("port")
+            if svc["name"] == "SSH":
+                port = ssh_port_for_instance(inst)
+            host_header = svc.get("host_header") or None
+            if host_header:
+                host_header = http_host_for_instance(inst, host_header)
             checks.append({
                 "key": f"{inst['id']}_{svc['name'].lower().replace(' ', '_')}",
                 "group": inst.get("group", "Ungrouped"),
@@ -503,12 +563,12 @@ def build_service_checks(instances: list) -> list:
                 "name": svc["name"],
                 "type": svc["type"],
                 "host": host,
-                "port": svc.get("port"),
+                "port": port,
                 "scheme": svc.get("scheme", "http"),
                 "path": svc.get("path", "/"),
                 "expect": svc.get("expect", [200]),
                 # Only set for name-based vhosts; None means "probe by IP".
-                "host_header": svc.get("host_header") or None,
+                "host_header": host_header,
             })
     return checks
 
