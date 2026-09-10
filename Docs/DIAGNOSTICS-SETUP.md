@@ -127,7 +127,10 @@ sudo cat /opt/ali-cloud-agent/secrets/diag_ed25519.pub
 ```
 
 The private key never leaves the backend server. `secrets/` is git-ignored.
-**One keypair serves all hosts** — do not generate a new one per host.
+**One keypair per MONITOR, serving every host that monitor watches** — do not
+generate one per host. This estate has two: staging's and production's. A host
+watched by both carries both public keys, on separate `authorized_keys` lines
+with different `from=` restrictions (see the tracker above).
 
 ---
 
