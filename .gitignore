@@ -18,3 +18,4 @@ instance/
 
 # SSH key for on-breach diagnostics — never commit private keys.
 secrets/
+Docs/DB-MIGRATION-STAGING.md
