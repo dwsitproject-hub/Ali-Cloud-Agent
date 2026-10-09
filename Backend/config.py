@@ -174,6 +174,15 @@ DIAG_REMOTE_SCRIPT = _clean(os.getenv("DIAG_REMOTE_SCRIPT", "/usr/local/bin/cam-
 DIAG_TIMEOUT = _int("DIAG_TIMEOUT", 45)
 DIAG_MAX_HOSTS = _int("DIAG_MAX_HOSTS", 3)   # cap per alert, keeps the cycle short
 DIAG_MAX_CHARS = _int("DIAG_MAX_CHARS", 6000)
+
+# --- Managed-database evidence (rdsdiag.py) ----------------------------------
+# A managed ApsaraDB instance has no shell, so the SSH collector above cannot
+# reach it and a database breach would alert with generic guidance only. When the
+# breaching instance IS the database this monitor connects to, collect evidence
+# over SQL instead: active queries, who is connected, and the costliest
+# statements. Read-only and capped by a server-side statement_timeout.
+RDSDIAG_ENABLED = _b("RDSDIAG_ENABLED", True)
+RDSDIAG_TIMEOUT = _int("RDSDIAG_TIMEOUT", 5)
 # Reject unknown SSH host keys instead of auto-accepting them (stricter; needs
 # the host keys pre-seeded in the container's known_hosts).
 DIAG_STRICT_HOST_KEY = _b("DIAG_STRICT_HOST_KEY", False)

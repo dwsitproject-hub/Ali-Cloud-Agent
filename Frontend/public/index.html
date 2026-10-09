@@ -64,6 +64,25 @@
   .ctr.unhealthy .ctr-state, .ctr.stopped .ctr-state { color:var(--bad); }
   .ctr.restarting .ctr-state { color:#d9a520; }
   .ctrs-note { font-size:11px; color:var(--mut); font-style:italic; }
+  /* Triage band - what is wrong and where to look, above the cards. Hidden
+     entirely when nothing is wrong, so its presence is itself the signal. */
+  #attention { background:var(--card); border:1px solid var(--bad);
+               border-left:4px solid var(--bad); border-radius:12px;
+               padding:14px 16px; margin-bottom:18px; }
+  #attention h2 { font-size:14px; margin:0 0 4px; color:var(--bad); }
+  .att-row { padding:9px 0; border-top:1px solid var(--line); }
+  .att-row:first-of-type { border-top:0; }
+  .att-what { font-size:13.5px; }
+  .att-why { font-size:12px; color:var(--mut); margin-top:2px; }
+  .att-next { font-size:12px; margin-top:5px; padding:6px 9px; border-radius:3px;
+              background:rgba(59,130,246,.10); border-left:2px solid var(--accent); }
+  .att-row.sev0 .att-what { color:var(--bad); font-weight:700; }
+  /* Per-service usage. Tabular numerals so the column stays readable as values change. */
+  .ctr-usage { margin-left:auto; color:var(--mut); font-size:11px; white-space:nowrap;
+               font-variant-numeric:tabular-nums; }
+  .ctr-usage i { font-style:normal; opacity:.55; margin:0 7px 0 1px; }
+  .ctr-state { margin-left:8px; color:var(--mut); white-space:nowrap; }
+  .ctr.hot .ctr-usage { color:var(--warn); font-weight:700; }
   .svc .dot { width:8px; height:8px; border-radius:50%; background:var(--mut); }
   .svc.up .dot { background:var(--ok); } .svc.down .dot { background:var(--bad); }
   .svc.down { border-color:var(--bad); color:var(--bad); }
@@ -106,6 +125,8 @@
     <span class="pill" id="breachPill">breaches: -</span>
     <span class="pill" id="svcPill">services: -</span>
   </div>
+
+  <div id="attention" style="display:none"></div>
 
   <div id="cards"><div class="muted">Loading...</div></div>
 
@@ -198,12 +219,18 @@ function fmtDisk(gb){
 
 function trunc(t, n){ return t.length > n ? t.slice(0, n-1) + '…' : t; }
 
-function ctrRow(c){
+function ctrNum(v){ return v==null ? '–' : v.toFixed(v < 10 ? 1 : 0); }
+
+function ctrRow(c, hottest){
+  // Name + usage + state. The image moves into the tooltip: when a host spikes
+  // you are looking for which service is heavy, not which tag it was built from.
   const h = c.health || 'unknown';
-  return `<div class="ctr ${esc(h)}" title="${esc(c.status || '')}${c.ports ? ' | ' + esc(c.ports) : ''}">
+  const hot = (hottest && c.name === hottest) ? ' hot' : '';
+  const title = [c.image, c.status, c.mem_usage, c.ports].filter(Boolean).join(' · ');
+  return `<div class="ctr ${esc(h)}${hot}" title="${esc(title)}">
     <span class="dot"></span>
     <span class="ctr-name">${esc(c.name)}</span>
-    <span class="ctr-img">${esc(c.image)}</span>
+    <span class="ctr-usage">${ctrNum(c.cpu_pct)}%<i>cpu</i> ${ctrNum(c.mem_pct)}%<i>mem</i></span>
     <span class="ctr-state">${esc(h)}</span>
   </div>`;
 }
@@ -213,16 +240,79 @@ function containersBlock(det){
   // engine + status live on the spec line instead, so say nothing here.
   if(!det) return '';
   const list = det.containers || [];
-  if(det.containers_error && !list.length){
-    return `<div class="sec-label">Docker services</div>
-            <div class="ctrs-note">${esc(det.containers_error)}</div>`;
-  }
-  if(!list.length) return '';
+  // A collection problem is worth showing even when some rows arrived - e.g.
+  // `docker ps` succeeded but `docker stats` timed out, so usage is missing.
+  const note = det.containers_error
+    ? `<div class="ctrs-note">${esc(det.containers_error)}</div>` : '';
+  if(!list.length) return note ? `<div class="sec-label">Docker services</div>${note}` : '';
   const bad = det.containers_attention || 0;
+  const hottest = (list.filter(c=>c.cpu_pct!=null)
+                       .sort((a,b)=>b.cpu_pct-a.cpu_pct)[0]||{}).name;
   const label = bad
     ? `Docker services &mdash; <span style="color:var(--bad)">${bad} need${bad===1?'s':''} attention</span>`
     : `Docker services &mdash; ${list.length} running`;
-  return `<div class="sec-label">${label}</div><div class="ctrs">${list.map(ctrRow).join('')}</div>`;
+  return `<div class="sec-label">${label}</div>${note}<div class="ctrs">${list.map(c=>ctrRow(c, hottest)).join('')}</div>`;
+}
+
+// What to do next, per kind of problem. Deliberately short: the email carries
+// the full guidance and the live evidence; this is the "where do I look" line.
+const NEXT_STEP = {
+  stopped:  'Instance is not running. Check the ECS console before anything else - metrics and probes will stay dark until it starts.',
+  CPU:      'Check the heaviest container on this card, then run cam-diag cpu on the host to see the process and query behind it.',
+  Memory:   'Check the heaviest container, then dmesg -T | grep -i "killed process" on the host for OOM kills.',
+  Disk:     'Find the growth: du -xh / | sort -rh | head, plus docker system df for images and logs.',
+  service:  'The probe target is shown below. Check that service on the host, and whether the port moved.',
+  container:'docker logs on the named container, and docker inspect for its healthcheck command.'
+};
+
+function attentionItems(scan, details){
+  // One flat, ranked list of everything wrong right now, so triage does not mean
+  // scanning every card. Order is by how much it blocks the others: a stopped
+  // instance explains its own dead metrics, so it goes first.
+  const items = [];
+  const byInst = {};
+  (scan.results||[]).forEach(r=>{ (byInst[r.instance_id] = byInst[r.instance_id] || {name:r.instance_name, metrics:[]}).metrics.push(r); });
+
+  Object.entries(details||{}).forEach(([id, det])=>{
+    const ps = det.spec && det.spec.provider_status;
+    if(ps && ps !== 'Running'){
+      items.push({sev:0, inst:det.name || id, what:`Instance is ${ps}`,
+                  why:'Reported by the provider, not by a probe', next:NEXT_STEP.stopped});
+    }
+  });
+  (scan.results||[]).filter(r=>r.breached).forEach(r=>{
+    const det = (details||{})[r.instance_id] || {};
+    const hot = (det.containers||[]).filter(c=>c.cpu_pct!=null)
+      .sort((a,b)=> (r.label==='Memory' ? b.mem_pct-a.mem_pct : b.cpu_pct-a.cpu_pct))[0];
+    const culprit = hot ? ` - heaviest service: ${hot.name} (${ctrNum(hot.cpu_pct)}% cpu, ${ctrNum(hot.mem_pct)}% mem)` : '';
+    items.push({sev:1, inst:r.instance_name,
+                what:`${r.label} ${r.value}${r.unit||''} (limit ${r.comparison} ${r.threshold}${r.unit||''})`,
+                why:`Threshold breached${culprit}`, next:NEXT_STEP[r.label] || ''});
+  });
+  (scan.services_down||[]).forEach(sv=>{
+    items.push({sev:2, inst:sv.instance_name, what:`${sv.name} unreachable`,
+                why:`${sv.target||''} ${sv.error||sv.detail||''}`.trim(), next:NEXT_STEP.service});
+  });
+  Object.entries(details||{}).forEach(([id, det])=>{
+    (det.containers||[]).filter(c=>['unhealthy','stopped','restarting'].includes(c.health)).forEach(c=>{
+      items.push({sev:3, inst:det.name || id, what:`${c.name} is ${c.health}`,
+                  why:c.status || '', next:NEXT_STEP.container});
+    });
+  });
+  return items.sort((a,b)=>a.sev-b.sev);
+}
+
+function renderAttention(scan, details){
+  const el = $('#attention');
+  const items = scan ? attentionItems(scan, details) : [];
+  if(!items.length){ el.style.display='none'; el.innerHTML=''; return; }
+  const rows = items.map(it=>`<div class="att-row sev${it.sev}">
+      <div class="att-what"><b>${esc(it.inst)}</b> &mdash; ${esc(it.what)}</div>
+      <div class="att-why">${esc(it.why)}</div>
+      ${it.next ? `<div class="att-next">${esc(it.next)}</div>` : ''}
+    </div>`).join('');
+  el.style.display='';
+  el.innerHTML = `<h2>Needs attention &mdash; ${items.length} item${items.length!==1?'s':''}</h2>${rows}`;
 }
 
 function renderCards(scan, details){
@@ -246,16 +336,23 @@ function renderCards(scan, details){
     Object.values(insts).forEach(i=>{ gBreaches+=i.metrics.filter(m=>m.breached).length;
       gDown += (svcByInst[i.id]||[]).filter(s=>s.up===false).length;
       gCtr += (details[i.id] && details[i.id].containers_attention) || 0; });
-    const cards = Object.values(insts).map(inst=>{
+    // Work out what is wrong BEFORE rendering, so the instances that need a human
+    // sort to the front of the group instead of sitting wherever the scan put them.
+    const prepared = Object.values(insts).map(inst=>{
       const svcs = svcByInst[inst.id]||[];
-      const anyDown = svcs.some(s=>s.up===false);
       const det = details[inst.id];
+      const anyDown = svcs.some(s=>s.up===false);
       // A container docker calls unhealthy, or one in a restart loop, is a real
       // problem even when every metric is green and the port still answers.
-      // Declared BEFORE `problem` uses it: `const` is not hoisted, so reading it
-      // earlier throws a ReferenceError that takes the whole dashboard down.
       const ctrProblem = ((det && det.containers_attention) || 0) > 0;
-      const problem = inst.metrics.some(m=>m.breached) || anyDown || ctrProblem;
+      const stopped = !!(det && det.spec && det.spec.provider_status
+                         && det.spec.provider_status !== 'Running');
+      const problem = inst.metrics.some(m=>m.breached) || anyDown || ctrProblem || stopped;
+      return {inst, svcs, det, problem};
+    });
+    prepared.sort((a,b)=> (b.problem?1:0)-(a.problem?1:0)
+                          || a.inst.name.localeCompare(b.inst.name));
+    const cards = prepared.map(({inst, svcs, det, problem})=>{
       const svcBlock = svcs.length
         ? `<div class="sec-label">Reachability</div><div class="services">${svcs.map(svcPill).join('')}</div>`
         : '';
@@ -356,7 +453,7 @@ async function refresh(){
   const s = await r.json();
   applyConfig(s.config);
   lastDetails = s.instances || lastDetails;
-  renderCards(s.last_scan, lastDetails); renderAlert(s.last_alert); renderHist(s.history);
+  renderCards(s.last_scan, lastDetails); renderAttention(s.last_scan, lastDetails); renderAlert(s.last_alert); renderHist(s.history);
   renderEvidence(s.last_scan && s.last_scan.diagnostics);
 }
 async function scan(){

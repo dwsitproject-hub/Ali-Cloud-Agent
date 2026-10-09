@@ -35,6 +35,15 @@ if [ "$FOCUS" = containers ]; then
         2>/dev/null | head -"$MAXCTR"; then
       printf 'ERR\tdocker ps failed or timed out\n'
     fi
+    # Resource usage for RUNNING containers, so a spike can be attributed to a
+    # service rather than just to a host. `docker stats` SAMPLES, so this is the
+    # slow half of this focus - bounded, and non-fatal: the CTR lines above are
+    # already useful without it, so a failure downgrades rather than blanks.
+    if ! timeout 20 docker stats --no-stream \
+        --format 'STAT\t{{.Name}}\t{{.CPUPerc}}\t{{.MemPerc}}\t{{.MemUsage}}' \
+        2>/dev/null | head -"$MAXCTR"; then
+      printf 'WARN\tdocker stats unavailable or timed out - CPU/memory per service missing\n'
+    fi
   else
     printf 'ERR\tdocker not installed on this host\n'
   fi

@@ -216,6 +216,66 @@ def _guidance_block(title: str, spec: dict) -> str:
     )
 
 
+def _top_consumers_section(scan: dict) -> str:
+    """Name the service, before any raw evidence.
+
+    A host percentage is not actionable on a shared box running twenty
+    containers. This answers "which one" in a table you can read in five
+    seconds, and it appears above the full evidence dump rather than inside it.
+    """
+    data = scan.get("top_consumers") or {}
+    if not data:
+        return ""
+
+    def rows_for(rows, metric):
+        out = []
+        for c in rows:
+            value = c.get("cpu_pct") if metric == "cpu" else c.get("mem_pct")
+            if value is None:
+                continue
+            extra = c.get("mem_usage") if metric == "mem" else ""
+            hot = "#c0392b" if value >= 50 else "#24292e"
+            out.append(
+                f"<tr>"
+                f"<td style='padding:4px 10px;border-bottom:1px solid #eee;font-family:ui-monospace,Menlo,monospace;font-size:12px'>{html.escape(c.get('name',''))}</td>"
+                f"<td style='padding:4px 10px;border-bottom:1px solid #eee;color:{hot};font-weight:600;text-align:right'>{value}%</td>"
+                f"<td style='padding:4px 10px;border-bottom:1px solid #eee;color:#777;font-size:12px'>{html.escape(extra or '')}</td>"
+                f"<td style='padding:4px 10px;border-bottom:1px solid #eee;color:#777;font-size:12px'>{html.escape(c.get('health',''))}</td>"
+                f"</tr>")
+        return "".join(out)
+
+    blocks = []
+    for name, d in data.items():
+        when = d.get("updated_at") or "unknown"
+        tables = []
+        for metric, title in (("cpu", "Top CPU"), ("mem", "Top memory")):
+            body = rows_for(d.get(metric) or [], metric)
+            if not body:
+                continue
+            tables.append(
+                f"<div style='margin:8px 0 0'>"
+                f"<div style='font-size:12px;color:#555;margin-bottom:3px'>{title}</div>"
+                f"<table style='border-collapse:collapse;width:100%'>{body}</table></div>")
+        if not tables:
+            continue
+        blocks.append(
+            f"<div style='margin:10px 0 0;padding:10px 12px;background:#fff;"
+            f"border:1px solid #e6e6e6;border-left:3px solid #2c3e50;border-radius:4px'>"
+            f"<div style='font-weight:700;font-size:13px'>{html.escape(name)}</div>"
+            f"<div style='font-size:11px;color:#888'>container usage sampled {html.escape(when)}</div>"
+            f"{''.join(tables)}</div>")
+
+    if not blocks:
+        return ""
+    return ("<h3 style='font-size:14px;color:#2c3e50;margin:18px 0 6px'>"
+            "Which service is consuming the host</h3>"
+            "<p style='color:#555;font-size:13px;margin:0'>Ranked from the host's own "
+            "<code>docker stats</code>. A figure at or above 50% is highlighted. "
+            "Values are from the previous scan cycle, so treat them as the shape of "
+            "the load rather than an instantaneous reading.</p>"
+            + "".join(blocks))
+
+
 def _evidence_section(scan: dict) -> str:
     """Live on-host evidence: which service/process/query caused the breach.
 
@@ -335,7 +395,8 @@ def build_email(scan: dict) -> dict:
 
     metric_rows = _metrics_rows(scan.get("results", []))
     services_html = _services_section(services_down) + _stopped_section(stopped)
-    diagnosis_html = _evidence_section(scan) + _diagnosis_section(scan)
+    diagnosis_html = (_top_consumers_section(scan) + _evidence_section(scan)
+                      + _diagnosis_section(scan))
 
     body = f"""\
 <div style="font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;max-width:680px;margin:auto">

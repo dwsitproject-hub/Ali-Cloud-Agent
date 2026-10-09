@@ -97,3 +97,85 @@ def test_host_with_docker_but_no_containers_is_not_an_error():
 def test_parse_tolerates_missing_ports_column():
     rows, _ = containers.parse("CTR\tn\timg\trunning\tUp 2 days")
     assert rows[0]["ports"] == ""
+
+
+# --- per-container CPU / memory ---------------------------------------------
+# "the host is at 95%" is not actionable; "klip-backend is holding 880 MiB" is.
+def _stat(name, cpu, mem_pct, mem_usage):
+    return "\t".join(["STAT", name, cpu, mem_pct, mem_usage])
+
+
+def test_stats_are_merged_onto_the_matching_container():
+    out = "\n".join([
+        "HOSTNAME\tECS-DB",
+        _line("klip-backend", "klip-backend", "running", "Up 3 hours (healthy)"),
+        _stat("klip-backend", "0.03%", "15.13%", "116.2MiB / 768MiB"),
+    ])
+    rows, error = containers.parse(out)
+    assert error is None
+    assert rows[0]["cpu_pct"] == 0.03
+    assert rows[0]["mem_pct"] == 15.13
+    assert rows[0]["mem_usage"] == "116.2MiB / 768MiB"
+
+
+def test_container_without_stats_keeps_nulls_not_zeros():
+    """A stopped container gets no `docker stats` row. Zero would read as
+    'idle'; None reads as 'unknown', which is the truth."""
+    rows, _ = containers.parse(_line("old", "img", "exited", "Exited (0) 2 days ago"))
+    assert rows[0]["cpu_pct"] is None and rows[0]["mem_pct"] is None
+
+
+def test_docker_stats_dashes_are_not_numbers():
+    rows, _ = containers.parse("\n".join([
+        _line("starting", "img", "running", "Up 2 seconds"),
+        _stat("starting", "--", "--", "-- / --"),
+    ]))
+    assert rows[0]["cpu_pct"] is None
+
+
+def test_stats_failure_downgrades_rather_than_blanks():
+    """`docker ps` can succeed while `docker stats` times out. The list is still
+    worth showing; the reason the numbers are missing is still worth recording."""
+    rows, error = containers.parse("\n".join([
+        "HOSTNAME\tECS-DB",
+        _line("app", "img", "running", "Up 1 hour"),
+        "WARN\tdocker stats unavailable or timed out",
+    ]))
+    assert len(rows) == 1
+    assert rows[0]["cpu_pct"] is None
+    assert error and "docker stats" in error
+
+
+def test_heaviest_consumer_sorts_above_lighter_healthy_ones():
+    rows, _ = containers.parse("\n".join([
+        _line("idle-svc", "img", "running", "Up 1 hour (healthy)"),
+        _stat("idle-svc", "0.01%", "1.00%", "10MiB / 1GiB"),
+        _line("hot-svc", "img", "running", "Up 1 hour (healthy)"),
+        _stat("hot-svc", "92.40%", "3.00%", "30MiB / 1GiB"),
+    ]))
+    assert [r["name"] for r in rows] == ["hot-svc", "idle-svc"]
+
+
+def test_problem_containers_still_outrank_heavy_healthy_ones():
+    """A restart loop matters more than a busy-but-fine container."""
+    rows, _ = containers.parse("\n".join([
+        _line("hot-svc", "img", "running", "Up 1 hour (healthy)"),
+        _stat("hot-svc", "99.00%", "80.00%", "800MiB / 1GiB"),
+        _line("broken", "img", "restarting", "Restarting (1) 5 seconds ago"),
+    ]))
+    assert rows[0]["name"] == "broken"
+
+
+def test_top_consumers_by_cpu_and_by_memory():
+    rows, _ = containers.parse("\n".join([
+        _line("a", "img", "running", "Up 1h"), _stat("a", "5.00%", "60.00%", "600MiB / 1GiB"),
+        _line("b", "img", "running", "Up 1h"), _stat("b", "80.00%", "2.00%", "20MiB / 1GiB"),
+        _line("c", "img", "running", "Up 1h"), _stat("c", "1.00%", "10.00%", "100MiB / 1GiB"),
+    ]))
+    assert [r["name"] for r in containers.top_consumers(rows, "cpu", 2)] == ["b", "a"]
+    assert [r["name"] for r in containers.top_consumers(rows, "mem", 2)] == ["a", "c"]
+
+
+def test_top_consumers_skips_containers_with_no_figures():
+    rows, _ = containers.parse(_line("stopped", "img", "exited", "Exited (0) 1 day ago"))
+    assert containers.top_consumers(rows, "cpu") == []

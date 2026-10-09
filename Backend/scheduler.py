@@ -110,6 +110,15 @@ def _maybe_auto_alert(scan: dict) -> None:
         log.exception("could not resolve stopped-reporting metrics")
         scan["stopped_reporting"] = []
 
+    # Which service on the box is actually heavy. Uses the rows collected on the
+    # previous cycle, so naming the culprit costs no extra SSH in the alert path.
+    try:
+        import containers
+        scan["top_consumers"] = containers.for_alert(scan)
+    except Exception:
+        log.exception("top-consumer lookup failed; alerting without it")
+        scan["top_consumers"] = {}
+
     log.warning("auto-alert (%s): %s metric breach, %s service down, %s stopped reporting",
                 reason, scan["breach_count"], scan["services_down_count"],
                 len(scan["stopped_reporting"]))

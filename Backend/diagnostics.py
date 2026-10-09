@@ -168,7 +168,14 @@ def collect_for_scan(scan: dict) -> dict:
             continue      # no probe host configured for this instance
         focuses = meta["focuses"]
         focus = focuses.pop() if len(focuses) == 1 else "all"
-        output = _run_remote(host, focus, target.get("role", ""), iid)
+        # A managed instance has no shell. Route it to the SQL collector rather
+        # than SSHing at an endpoint that will never answer.
+        if config.metric_templates_for({"id": iid, "role": target.get("role", "")})                 is config.METRIC_TEMPLATES_RDS:
+            import rdsdiag
+            output = rdsdiag.collect({"id": iid, "name": meta["name"], "host": host},
+                                     focus)
+        else:
+            output = _run_remote(host, focus, target.get("role", ""), iid)
         if output:
             results[meta["name"]] = {"host": host, "focus": focus, "output": output}
             log.info("diagnostics collected from %s (%s)", host, focus)

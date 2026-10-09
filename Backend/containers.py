@@ -73,6 +73,27 @@ _STALE_SCRIPT = ("host script is too old to support the 'containers' focus - "
                  "(Docs/DIAGNOSTICS-SETUP.md step 2b)")
 
 
+def _pct(raw: str):
+    """`docker stats` percentages arrive as "12.55%" — and as "--" for a
+    container that has just started or is not running."""
+    try:
+        return round(float((raw or "").strip().rstrip("%")), 2)
+    except ValueError:
+        return None
+
+
+def top_consumers(rows: list, by: str = "cpu", limit: int = 5) -> list:
+    """The heaviest containers by ``cpu`` or ``mem``, biggest first.
+
+    Used by the alert email to answer "which service caused this" in one line,
+    rather than leaving the reader to scan a wall of `docker stats` output.
+    """
+    key = "cpu_pct" if by == "cpu" else "mem_pct"
+    ranked = [r for r in rows if r.get(key) is not None]
+    ranked.sort(key=lambda r: r[key], reverse=True)
+    return ranked[:limit]
+
+
 def parse(output: str) -> tuple:
     """``(containers, error)`` from the remote script's `containers` output.
 
@@ -80,11 +101,20 @@ def parse(output: str) -> tuple:
     spaces and parentheses, so neither is a safe delimiter.
     """
     text = output or ""
-    rows, error = [], None
+    rows, stats, error = [], {}, None
     for line in text.splitlines():
         parts = line.rstrip("\n").split("\t")
-        if parts[0] == "ERR":
+        if parts[0] in ("ERR", "WARN"):
+            # WARN downgrades rather than blanks: `docker stats` can fail while
+            # `docker ps` succeeded, leaving a usable list without usage figures.
             error = parts[1] if len(parts) > 1 else "unknown error"
+            continue
+        if parts[0] == "STAT" and len(parts) >= 5:
+            stats[parts[1]] = {
+                "cpu_pct": _pct(parts[2]),
+                "mem_pct": _pct(parts[3]),
+                "mem_usage": parts[4].strip(),
+            }
             continue
         if parts[0] != "CTR" or len(parts) < 5:
             continue
@@ -93,11 +123,18 @@ def parse(output: str) -> tuple:
         rows.append({
             "name": name, "image": image, "state": state, "status": status,
             "health": classify(state, status), "ports": ports,
+            # Filled from the STAT lines below; a stopped container has none.
+            "cpu_pct": None, "mem_pct": None, "mem_usage": "",
         })
+    for row in rows:
+        row.update(stats.get(row["name"], {}))
     if not rows and error is None and text.strip() and _SENTINEL not in text:
         # Output, but not OUR output: an outdated host script (see _SENTINEL).
         error = _STALE_SCRIPT
+    # Problems first, then the heaviest consumer - which is the question being
+    # asked when a host spikes: not "what is running" but "what is eating it".
     rows.sort(key=lambda c: (c["health"] not in ("unhealthy", "stopped", "restarting"),
+                             -max(c["cpu_pct"] or 0.0, c["mem_pct"] or 0.0),
                              c["name"]))
     return rows, error
 
@@ -154,3 +191,35 @@ def refresh() -> int:
     log.info("containers: %s/%s host(s) reported, %s container(s) needing attention",
              collected, len(targets), unhealthy)
     return collected
+
+
+def for_alert(scan: dict) -> dict:
+    """Top CPU/memory consumers on the instances implicated in this scan.
+
+    Reads the rows collected on the previous cycle rather than re-running
+    `docker stats` now: during a sustained breach a five-minute-old sample is
+    representative, and the alert path should not grow an SSH round trip per host
+    for something the scan already has. ``updated_at`` travels with it so the
+    email can be honest about how fresh the figures are.
+
+    Must run inside a Flask app context.
+    """
+    from models import Instance
+
+    ids = {b.get("instance_id") for b in scan.get("breaches", []) if b.get("instance_id")}
+    ids |= {s.get("instance_id") for s in scan.get("services_down", []) if s.get("instance_id")}
+    if not ids:
+        return {}
+
+    out = {}
+    for inst in Instance.query.filter(Instance.id.in_(list(ids))).all():
+        rows = inst.containers_json or []
+        if not rows:
+            continue
+        out[inst.name] = {
+            "updated_at": (inst.containers_updated_at.isoformat()
+                           if inst.containers_updated_at else None),
+            "cpu": top_consumers(rows, "cpu", 5),
+            "mem": top_consumers(rows, "mem", 5),
+        }
+    return out

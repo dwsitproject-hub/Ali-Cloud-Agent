@@ -56,12 +56,21 @@ dashboard shows everything grouped by environment. Access is gated by SSO
   via ECS `DescribeInstances`+`DescribeDisks` and RDS `DescribeDBInstanceAttribute`;
   cached on the Instance row, refreshed every `SPECS_REFRESH_HOURS`. Gives each
   percentage a denominator - "95% memory" reads differently on 4 GB than 64 GB.
-- `Backend/containers.py` - **docker workloads** each host reports, over the same
-  least-privilege SSH path as diagnostics (`cam-diag containers`, one extra
-  allow-listed focus). Answers "what does the box say is running, and does docker
-  call it healthy?", which is how an unhealthy-but-listening container or a
-  restart loop becomes visible; `healthcheck.py` only sees reachability. Needs the
-  `DIAG_SSH_*` identity; collects nothing (and says so) without it.
+- `Backend/containers.py` - **docker workloads and their resource usage**, over
+  the same least-privilege SSH path as diagnostics (`cam-diag containers`, one
+  extra allow-listed focus running `docker ps` + `docker stats`). Answers both
+  "does docker call it healthy?" and "which service is eating the host?" -
+  `healthcheck.py` only sees reachability, and a host percentage is not actionable
+  on a box running twenty containers. `top_consumers()` ranks them for the alert
+  email; `for_alert()` reads the previous cycle's rows so naming the culprit costs
+  no extra SSH in the alert path. Needs the `DIAG_SSH_*` identity; collects
+  nothing (and says so) without it.
+- `Backend/rdsdiag.py` - the same question for a **managed database**, which has
+  no shell. Collects active queries, connections by client, longest transactions
+  and (where the extension exists) `pg_stat_statements` over SQL, scoped to the
+  breaching metric. Only for the instance the monitor itself connects to - for any
+  other managed instance it says so rather than returning silence.
+  `diagnostics.collect_for_scan()` routes RDS instances here instead of SSH.
 - `Backend/config.py` - env settings + `METRIC_TEMPLATES`, `SERVICE_CHECKS_BY_ROLE`,
   `INSTANCE_GROUPS` (seed only), `build_metrics()`/`build_service_checks()`.
 - `Backend/seed.py` - `flask seed` (idempotent: groups/instances/dev-user).
@@ -116,6 +125,18 @@ are not duplicated onto every metric row and every history entry.
   and no threshold is ever evaluated.
 
 ## Conventions / gotchas
+- **A managed instance cannot be diagnosed over SSH.** ApsaraDB has no shell, so
+  `diagnostics` routes anything matching `METRIC_TEMPLATES_RDS` to `rdsdiag` and
+  collects over SQL instead. Before this, an RDS CPU breach alerted with generic
+  guidance only - the evidence collector failed silently against an endpoint that
+  can never answer.
+- **The dashboard leads with a triage band**, not with cards. `attentionItems()`
+  in `index.html` flattens everything wrong into one ranked list - provider status
+  first (a stopped instance explains its own dead metrics), then breaches with the
+  heaviest container named, then down probes, then unhealthy containers - each
+  with a one-line next step. Instances with problems sort to the front of their
+  group. The band is hidden entirely when nothing is wrong, so its presence is the
+  signal.
 - **A metric with no value is NOT a healthy metric.** `_breached(None, ...)` is
   `False`, so a blank value is never compared against its threshold. This once hid
   a real incident: Backend Staging ran at 95% memory for an hour with no alert,
