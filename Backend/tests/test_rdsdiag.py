@@ -118,3 +118,20 @@ def test_malformed_dsn_map_disables_rather_than_crashes(monkeypatch):
     assert config.rdsdiag_dsns() == {}
     monkeypatch.setenv("RDSDIAG_DSNS", '["a","b"]')
     assert config.rdsdiag_dsns() == {}
+
+
+# --- SQL that only fails against a real server ------------------------------
+def test_no_positional_group_by():
+    """`GROUP BY 1` refers to the OUTPUT column, which in these queries is a
+    concatenated string containing count(*) - PostgreSQL rejects it with
+    GroupingError. Caught only at runtime, so guard it here."""
+    import re
+    for title, sql, _f in rdsdiag._SECTIONS:
+        for clause in re.findall(r"group\s+by\s+([^\n]+)", sql, re.I):
+            assert not re.match(r"^\s*\d", clause), f"{title}: GROUP BY {clause.strip()}"
+
+
+def test_password_with_a_hash_survives(monkeypatch):
+    """_clean() strips from the first '#'; a DSN must not go through it."""
+    monkeypatch.setenv("RDSDIAG_DSNS", '{"pgm-a":"postgresql://u:pa#ss@h:5432/d"}')
+    assert config.rdsdiag_dsns() == {"pgm-a": "postgresql://u:pa#ss@h:5432/d"}

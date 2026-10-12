@@ -195,7 +195,11 @@ def rdsdiag_dsns() -> dict:
     scan - evidence is a nice-to-have, alerting is not.
     """
     import json
-    raw = _clean(os.getenv("RDSDIAG_DSNS", ""))
+    # NOT _clean(): that strips from the first "#", and a password containing one
+    # would silently truncate the JSON into something unparseable - which reads as
+    # "no credentials" rather than as a configuration error.  No inline comments
+    # on this line.
+    raw = os.getenv("RDSDIAG_DSNS", "").strip()
     if not raw:
         return {}
     try:

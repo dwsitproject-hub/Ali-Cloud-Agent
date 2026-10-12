@@ -80,7 +80,7 @@ _SECTIONS = [
     ("CONNECTIONS BY STATE",
      """SELECT coalesce(state,'(none)') || '  x' || count(*)::text
           FROM pg_stat_activity WHERE datname = current_database()
-         GROUP BY 1 ORDER BY count(*) DESC""",
+         GROUP BY state ORDER BY count(*) DESC""",
      {"cpu", "memory", "service", "all"}),
 
     ("CONNECTIONS BY CLIENT",
@@ -88,7 +88,7 @@ _SECTIONS = [
                coalesce(nullif(application_name,''),'(no app name)') ||
                '  x' || count(*)::text
           FROM pg_stat_activity WHERE datname = current_database()
-         GROUP BY 1,2 ORDER BY count(*) DESC""",
+         GROUP BY client_addr, application_name ORDER BY count(*) DESC""",
      {"cpu", "memory", "service", "all"}),
 
     # The money query: what is running right now, oldest first. A statement that
