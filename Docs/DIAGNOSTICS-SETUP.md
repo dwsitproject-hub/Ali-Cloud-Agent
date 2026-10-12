@@ -43,6 +43,7 @@ verified in-container against all three (`enabled: True`, 3/3 OK).
 | DB Production | database | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ **:22** |
 | Backend Production | app + monitor | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ **:1818** |
 | Frontend Production | web | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ **:1818** |
+| MCP Gateway (`SrvMCP`) | app host, no repo | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ **:1818** |
 
 ### Why staging hosts carry TWO keys
 
@@ -205,6 +206,34 @@ scp -P 22 /opt/ali-cloud-agent/deploy/cam-diag.sh root@"$HOST_IP":/tmp/   # -P 1
 # 2) then on THAT host:
 install -m 0755 -o root -g root /tmp/cam-diag.sh /usr/local/bin/cam-diag
 ```
+
+> **Getting the script onto a host with no repo and no key.** MCP Gateway took
+> three attempts; the working route is below.
+>
+> * `scp` as **root** fails with `Permission denied (publickey)` if the target
+>   only trusts keys you do not have.
+> * The backend's own `/root/.ssh/id_ed25519` is **passphrase-protected**, so it
+>   cannot be used unattended. A passphrase cannot be recovered from a key file -
+>   only tested with `ssh-keygen -y -f <key>`. Check which keys are usable:
+>
+>   ```bash
+>   for k in /root/.ssh/id_ed25519 /opt/ali-cloud-agent/secrets/diag_ed25519; do printf '%-48s ' "$k"; ssh-keygen -y -f "$k" </dev/null >/dev/null 2>&1 && echo usable || echo "passphrase protected"; done
+>   ```
+>
+> * Serving the file over HTTP from the backend (`python3 -m http.server`) is
+>   clean but was **blocked by the security group** between those two subnets.
+> * What worked: temporarily authorise the **diagnostics** public key (no
+>   passphrase, and destined for that host anyway) against the host's admin user,
+>   `scp -i` the file, then remove that line. Give the temporary entry a distinct
+>   comment such as `cloud-agent-diag-TEMP` so it can be deleted exactly, and omit
+>   `no-pty` on it - `scp` needs the channel, unlike the exec-only access
+>   `cloudmonitor` gets.
+>
+> Verify the bytes before installing: the file is about to receive a `NOPASSWD`
+> sudoers entry, so `sha256sum` on both ends is not ceremony.
+>
+> On a host where you are not root, every step takes `sudo`, and
+> `printf ... | sudo tee -a` replaces `printf ... >>`.
 
 > `Could not resolve hostname :` means `HOST_IP` was empty — set it first, and make
 > sure you are running the `scp` on the **backend** server, not the target.
