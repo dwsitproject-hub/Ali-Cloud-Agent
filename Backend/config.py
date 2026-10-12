@@ -183,6 +183,26 @@ DIAG_MAX_CHARS = _int("DIAG_MAX_CHARS", 6000)
 # statements. Read-only and capped by a server-side statement_timeout.
 RDSDIAG_ENABLED = _b("RDSDIAG_ENABLED", True)
 RDSDIAG_TIMEOUT = _int("RDSDIAG_TIMEOUT", 5)
+
+
+def rdsdiag_dsns() -> dict:
+    """``{instance_id: libpq DSN}`` for managed instances this monitor does not
+    own, as JSON in RDSDIAG_DSNS.
+
+    JSON rather than the `id:value` form the PROBE_* overrides use: a DSN carries
+    ":" "@" and possibly "," in the password, any of which would break a
+    delimiter-split. Malformed input disables the feature rather than crashing a
+    scan - evidence is a nice-to-have, alerting is not.
+    """
+    import json
+    raw = _clean(os.getenv("RDSDIAG_DSNS", ""))
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+        return {str(k): str(v) for k, v in parsed.items()} if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
 # Reject unknown SSH host keys instead of auto-accepting them (stricter; needs
 # the host keys pre-seeded in the container's known_hosts).
 DIAG_STRICT_HOST_KEY = _b("DIAG_STRICT_HOST_KEY", False)

@@ -77,6 +77,18 @@
   .att-next { font-size:12px; margin-top:5px; padding:6px 9px; border-radius:3px;
               background:rgba(59,130,246,.10); border-left:2px solid var(--accent); }
   .att-row.sev0 .att-what { color:var(--bad); font-weight:700; }
+  .att-detail { margin-top:6px; }
+  .att-detail summary { cursor:pointer; font-size:12px; color:var(--accent); outline:none; }
+  .att-detail summary::marker { color:var(--mut); }
+  .att-cause { font-size:12.5px; line-height:1.55; margin:7px 0 0; padding:8px 10px;
+               background:rgba(255,255,255,.03); border-left:2px solid var(--warn);
+               border-radius:3px; }
+  .att-steps { margin:8px 0 2px; padding-left:20px; }
+  .att-steps li { margin:7px 0; font-size:12px; }
+  .step-what { color:var(--mut); margin-bottom:3px; }
+  .att-steps code { display:block; background:#0b0f14; border:1px solid var(--line);
+                    border-radius:4px; padding:6px 8px; font-size:11.5px;
+                    white-space:pre-wrap; word-break:break-all; color:#9ecbff; }
   /* Per-service usage. Tabular numerals so the column stays readable as values change. */
   .ctr-usage { margin-left:auto; color:var(--mut); font-size:11px; white-space:nowrap;
                font-variant-numeric:tabular-nums; }
@@ -254,52 +266,70 @@ function containersBlock(det){
   return `<div class="sec-label">${label}</div>${note}<div class="ctrs">${list.map(c=>ctrRow(c, hottest)).join('')}</div>`;
 }
 
-// What to do next, per kind of problem. Deliberately short: the email carries
-// the full guidance and the live evidence; this is the "where do I look" line.
-const NEXT_STEP = {
-  stopped:  'Instance is not running. Check the ECS console before anything else - metrics and probes will stay dark until it starts.',
-  CPU:      'Check the heaviest container on this card, then run cam-diag cpu on the host to see the process and query behind it.',
-  Memory:   'Check the heaviest container, then dmesg -T | grep -i "killed process" on the host for OOM kills.',
-  Disk:     'Find the growth: du -xh / | sort -rh | head, plus docker system df for images and logs.',
-  service:  'The probe target is shown below. Check that service on the host, and whether the port moved.',
-  container:'docker logs on the named container, and docker inspect for its healthcheck command.'
-};
+let lastGuidance = {};   // root cause + steps, served by /api/status
+
+// Which guidance entry applies, and - where the evidence can tell us - which
+// variant of it. "Connection refused" and "timed out" are opposite diagnoses,
+// so the band says which one rather than offering both.
+function serviceVariant(why){
+  const t = (why || '').toLowerCase();
+  if(t.includes('refused')) return 'refused';
+  if(t.includes('timed out') || t.includes('timeout')) return 'timeout';
+  if(t.includes('unexpected status')) return 'status';
+  return null;
+}
 
 function attentionItems(scan, details){
   // One flat, ranked list of everything wrong right now, so triage does not mean
-  // scanning every card. Order is by how much it blocks the others: a stopped
-  // instance explains its own dead metrics, so it goes first.
+  // scanning every card. Ordered by how much each explains the others: a stopped
+  // instance accounts for its own dead metrics, so it goes first.
   const items = [];
-  const byInst = {};
-  (scan.results||[]).forEach(r=>{ (byInst[r.instance_id] = byInst[r.instance_id] || {name:r.instance_name, metrics:[]}).metrics.push(r); });
-
   Object.entries(details||{}).forEach(([id, det])=>{
     const ps = det.spec && det.spec.provider_status;
     if(ps && ps !== 'Running'){
-      items.push({sev:0, inst:det.name || id, what:`Instance is ${ps}`,
-                  why:'Reported by the provider, not by a probe', next:NEXT_STEP.stopped});
+      items.push({sev:0, kind:'stopped', inst:det.name || id,
+                  what:`Instance is ${ps}`, why:'Reported by the provider, not by a probe'});
     }
   });
   (scan.results||[]).filter(r=>r.breached).forEach(r=>{
     const det = (details||{})[r.instance_id] || {};
     const hot = (det.containers||[]).filter(c=>c.cpu_pct!=null)
       .sort((a,b)=> (r.label==='Memory' ? b.mem_pct-a.mem_pct : b.cpu_pct-a.cpu_pct))[0];
-    const culprit = hot ? ` - heaviest service: ${hot.name} (${ctrNum(hot.cpu_pct)}% cpu, ${ctrNum(hot.mem_pct)}% mem)` : '';
-    items.push({sev:1, inst:r.instance_name,
-                what:`${r.label} ${r.value}${r.unit||''} (limit ${r.comparison} ${r.threshold}${r.unit||''})`,
-                why:`Threshold breached${culprit}`, next:NEXT_STEP[r.label] || ''});
+    const culprit = hot
+      ? `Heaviest service on this host: ${hot.name} (${ctrNum(hot.cpu_pct)}% cpu, ${ctrNum(hot.mem_pct)}% mem${hot.mem_usage ? ', ' + hot.mem_usage : ''})`
+      : 'No per-container figures for this host - diagnostics may not be set up on it';
+    items.push({sev:1, kind:r.label, inst:r.instance_name,
+                what:`${r.label} ${r.value}${r.unit||''} is over the ${r.comparison} ${r.threshold}${r.unit||''} limit`,
+                why:culprit});
   });
   (scan.services_down||[]).forEach(sv=>{
-    items.push({sev:2, inst:sv.instance_name, what:`${sv.name} unreachable`,
-                why:`${sv.target||''} ${sv.error||sv.detail||''}`.trim(), next:NEXT_STEP.service});
+    const why = `${sv.target||''} - ${sv.error||sv.detail||'no detail'}`.trim();
+    items.push({sev:2, kind:'service', variant:serviceVariant(why),
+                inst:sv.instance_name, what:`${sv.name} is unreachable`, why:why});
   });
   Object.entries(details||{}).forEach(([id, det])=>{
     (det.containers||[]).filter(c=>['unhealthy','stopped','restarting'].includes(c.health)).forEach(c=>{
-      items.push({sev:3, inst:det.name || id, what:`${c.name} is ${c.health}`,
-                  why:c.status || '', next:NEXT_STEP.container});
+      items.push({sev:3, kind:'container', inst:det.name || id, ctr:c.name,
+                  what:`${c.name} is ${c.health}`, why:c.status || ''});
     });
   });
   return items.sort((a,b)=>a.sev-b.sev);
+}
+
+function guidanceBlock(item){
+  const g = lastGuidance[item.kind];
+  if(!g) return '';
+  // A variant replaces the generic cause when the evidence identified one.
+  const cause = (item.variant && g.variants && g.variants[item.variant]) || g.cause;
+  const steps = (g.steps||[]).map((st,i)=>`<li>
+      <div class="step-what">${esc(st.what)}</div>
+      <code>${esc((st.cmd||'').replace(/<name>/g, item.ctr || '<name>'))}</code>
+    </li>`).join('');
+  return `<details class="att-detail">
+    <summary>Root cause &amp; how to fix</summary>
+    <div class="att-cause">${esc(cause)}</div>
+    ${steps ? `<ol class="att-steps">${steps}</ol>` : ''}
+  </details>`;
 }
 
 function renderAttention(scan, details){
@@ -309,7 +339,7 @@ function renderAttention(scan, details){
   const rows = items.map(it=>`<div class="att-row sev${it.sev}">
       <div class="att-what"><b>${esc(it.inst)}</b> &mdash; ${esc(it.what)}</div>
       <div class="att-why">${esc(it.why)}</div>
-      ${it.next ? `<div class="att-next">${esc(it.next)}</div>` : ''}
+      ${guidanceBlock(it)}
     </div>`).join('');
   el.style.display='';
   el.innerHTML = `<h2>Needs attention &mdash; ${items.length} item${items.length!==1?'s':''}</h2>${rows}`;
@@ -453,6 +483,7 @@ async function refresh(){
   const s = await r.json();
   applyConfig(s.config);
   lastDetails = s.instances || lastDetails;
+  lastGuidance = s.guidance || lastGuidance;
   renderCards(s.last_scan, lastDetails); renderAttention(s.last_scan, lastDetails); renderAlert(s.last_alert); renderHist(s.history);
   renderEvidence(s.last_scan && s.last_scan.diagnostics);
 }

@@ -52,8 +52,25 @@ def targets_our_own_database(inst: dict) -> bool:
                 or (inst_id and dsn_host.startswith(inst_id + ".")))
 
 
+def dsn_for(inst: dict) -> str | None:
+    """A libpq DSN for this instance, or None if we have no credentials.
+
+    Two sources, in order: an explicit entry in RDSDIAG_DSNS (which is how one
+    monitor reaches a managed instance that is not its own - e.g. production
+    diagnosing ApsaraDB Staging), then the monitor's own DATABASE_URL when that
+    points at this instance.
+    """
+    override = config.rdsdiag_dsns().get((inst.get("id") or "").strip())
+    if override:
+        return override
+    if targets_our_own_database(inst):
+        # SQLAlchemy's "+psycopg2" is not part of a libpq URL.
+        return config.DATABASE_URL.replace("postgresql+psycopg2://", "postgresql://", 1)
+    return None
+
+
 def enabled() -> bool:
-    return bool(config.RDSDIAG_ENABLED and config.DATABASE_URL)
+    return bool(config.RDSDIAG_ENABLED)
 
 
 # --- the queries -------------------------------------------------------------
@@ -119,74 +136,78 @@ SELECT round(total_exec_time)::text || 'ms total  x' || calls::text ||
 """ % QUERY_CHARS
 
 
-def _rows(sql: str, limit: int = MAX_ROWS) -> list:
-    from sqlalchemy import text
-
-    from db import db
-
-    result = db.session.execute(text(f"SELECT * FROM ({sql}) q LIMIT {int(limit)}"))
-    return [str(r[0]) for r in result.fetchall()]
+def _rows(cur, sql: str, limit: int = MAX_ROWS) -> list:
+    cur.execute(f"SELECT * FROM ({sql}) q LIMIT {int(limit)}")
+    return [str(r[0]) for r in cur.fetchall()]
 
 
 def collect(inst: dict, focus: str = "all") -> str | None:
     """Read-only evidence for one managed database, or None if unavailable.
 
-    Returns text in the same shape ``cam-diag`` produces, so the alert email and
-    the dashboard render it through the existing evidence path with no special
-    casing.
+    Returns text in the shape ``cam-diag`` produces, so the alert email and the
+    dashboard render it through the existing evidence path with no special
+    casing. Opens its own short-lived connection rather than borrowing the app's
+    session: a diagnostic must not leave the scan's transaction in an odd state,
+    and this way it can also reach an instance that is not the monitor's own
+    database (see RDSDIAG_DSNS).
     """
     if not enabled():
         return None
-    if not targets_our_own_database(inst):
+
+    dsn = dsn_for(inst)
+    if not dsn:
         # Honest about the limitation rather than silently empty: the operator
         # should know WHY there is no evidence for this instance.
-        return ("(no evidence: this managed instance is not the database this "
-                "monitor connects to, so there are no credentials for it. "
-                "Set RDSDIAG_ENABLED=false to stop asking.)")
+        return ("(no evidence: no credentials for this managed instance. Add it to "
+                "RDSDIAG_DSNS to let this monitor collect from it, or accept that "
+                "only its CloudMonitor metrics are available.)")
 
-    from sqlalchemy import text
+    import psycopg2
 
-    from db import db
-
-    blocks = [f"== MANAGED DATABASE ({inst.get('name') or inst.get('id')}) =="]
+    name = inst.get("name") or inst.get("id")
+    blocks = ["== MANAGED DATABASE (%s) ==" % name]
+    conn = None
     try:
-        # Server-side cap: a diagnostic must not queue behind the incident.
-        db.session.execute(
-            text(f"SET LOCAL statement_timeout = '{int(config.RDSDIAG_TIMEOUT)}s'"))
+        conn = psycopg2.connect(dsn, connect_timeout=config.RDSDIAG_TIMEOUT)
+        # Belt and braces: the account may well be able to write, so say we will
+        # not. A diagnostic has no business changing the thing it is inspecting.
+        conn.set_session(readonly=True, autocommit=True)
+        with conn.cursor() as cur:
+            # Server-side cap, so a diagnostic cannot queue behind the incident.
+            cur.execute("SET statement_timeout = '%ds'" % int(config.RDSDIAG_TIMEOUT))
 
-        for title, sql, focuses in _SECTIONS:
-            if focus not in focuses:
-                continue
-            try:
-                rows = _rows(sql)
-            except Exception as exc:
-                blocks.append(f"\n== {title} ==\n(failed: {type(exc).__name__})")
-                continue
-            body = "\n".join(rows) if rows else "(none)"
-            blocks.append(f"\n== {title} ==\n{body}")
+            for title, sql, focuses in _SECTIONS:
+                if focus not in focuses:
+                    continue
+                try:
+                    rows = _rows(cur, sql)
+                    body = "\n".join(rows) if rows else "(none)"
+                except Exception as exc:
+                    body = "(failed: %s)" % type(exc).__name__
+                blocks.append("\n== %s ==\n%s" % (title, body))
 
-        if focus in ("cpu", "memory", "all"):
-            try:
-                has_ext = _rows("SELECT 1 FROM pg_extension WHERE extname='pg_stat_statements'", 1)
-                if has_ext:
-                    rows = _rows(_STATEMENTS_SQL)
-                    blocks.append("\n== TOP STATEMENTS BY TOTAL TIME ==\n"
-                                  + ("\n".join(rows) if rows else "(none)"))
-                else:
-                    blocks.append("\n== TOP STATEMENTS BY TOTAL TIME ==\n"
-                                  "(pg_stat_statements not enabled - turn it on in the "
-                                  "ApsaraDB parameter group to rank queries by cost)")
-            except Exception as exc:
-                blocks.append(f"\n== TOP STATEMENTS BY TOTAL TIME ==\n(failed: {type(exc).__name__})")
+            if focus in ("cpu", "memory", "all"):
+                title = "TOP STATEMENTS BY TOTAL TIME"
+                try:
+                    if _rows(cur, "SELECT 1 FROM pg_extension "
+                                  "WHERE extname='pg_stat_statements'", 1):
+                        rows = _rows(cur, _STATEMENTS_SQL)
+                        body = "\n".join(rows) if rows else "(none)"
+                    else:
+                        body = ("(pg_stat_statements not enabled - turn it on in the "
+                                "ApsaraDB parameter group to rank queries by cost)")
+                except Exception as exc:
+                    body = "(failed: %s)" % type(exc).__name__
+                blocks.append("\n== %s ==\n%s" % (title, body))
 
         return "\n".join(blocks)
     except Exception as exc:
-        log.warning("rdsdiag: collection failed: %s: %s", type(exc).__name__, exc)
+        log.warning("rdsdiag: %s collection failed: %s: %s",
+                    name, type(exc).__name__, exc)
         return None
     finally:
-        # SET LOCAL dies with the transaction; roll back so the scan's own
-        # session is not left carrying a diagnostic timeout.
-        try:
-            db.session.rollback()
-        except Exception:
-            pass
+        if conn is not None:
+            try:
+                conn.close()
+            except Exception:
+                pass

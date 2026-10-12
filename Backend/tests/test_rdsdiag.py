@@ -77,3 +77,44 @@ def test_every_section_is_read_only():
         low = sql.lower()
         assert low.strip().startswith("select"), sql[:40]
         assert not any(b in low for b in banned), sql[:40]
+
+
+# --- reaching a managed instance that is not our own ------------------------
+def test_explicit_dsn_lets_one_monitor_reach_another_instance(monkeypatch):
+    """Production alerts for the whole estate, so it needs evidence from
+    ApsaraDB Staging too - which is not the database it connects to."""
+    monkeypatch.setattr(config, "DATABASE_URL", DSN)
+    monkeypatch.setattr(config, "rdsdiag_dsns",
+                        lambda: {"pgm-other": "postgresql://u:p@other:5432/db"})
+    assert rdsdiag.dsn_for({"id": "pgm-other", "host": "other"}) == \
+        "postgresql://u:p@other:5432/db"
+
+
+def test_own_database_dsn_drops_the_sqlalchemy_driver_suffix(monkeypatch):
+    """`postgresql+psycopg2://` is SQLAlchemy's spelling; libpq rejects it."""
+    monkeypatch.setattr(config, "DATABASE_URL", DSN)
+    monkeypatch.setattr(config, "rdsdiag_dsns", dict)
+    out = rdsdiag.dsn_for({"id": "pgm-x", "host": OWN})
+    assert out.startswith("postgresql://") and "+psycopg2" not in out
+
+
+def test_no_dsn_means_no_credentials(monkeypatch):
+    monkeypatch.setattr(config, "DATABASE_URL", DSN)
+    monkeypatch.setattr(config, "rdsdiag_dsns", dict)
+    assert rdsdiag.dsn_for({"id": "pgm-other", "host": "other"}) is None
+
+
+def test_dsn_map_parsing(monkeypatch):
+    monkeypatch.setenv("RDSDIAG_DSNS", '{"pgm-a":"postgresql://u:p,x@h:5432/d"}')
+    # a password containing a comma survives, which is why this is JSON and not
+    # the `id:value,id:value` form the PROBE_* overrides use
+    assert config.rdsdiag_dsns() == {"pgm-a": "postgresql://u:p,x@h:5432/d"}
+
+
+def test_malformed_dsn_map_disables_rather_than_crashes(monkeypatch):
+    """Evidence is a nice-to-have; alerting is not. Bad config must not take a
+    scan cycle down with it."""
+    monkeypatch.setenv("RDSDIAG_DSNS", "not json at all")
+    assert config.rdsdiag_dsns() == {}
+    monkeypatch.setenv("RDSDIAG_DSNS", '["a","b"]')
+    assert config.rdsdiag_dsns() == {}

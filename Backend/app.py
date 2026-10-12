@@ -113,6 +113,10 @@ def status():
         "auto_alert_on_breach": config.AUTO_ALERT_ON_BREACH,
         "recipients": config.ALERT_RECIPIENTS,
     }
+    # Root cause + steps for the dashboard's attention band. Served rather than
+    # duplicated in JS so the page and the alert email cannot drift apart.
+    import guidance
+    snap["guidance"] = guidance.for_api()
     return jsonify(snap)
 
 

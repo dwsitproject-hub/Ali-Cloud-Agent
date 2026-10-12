@@ -71,6 +71,15 @@ dashboard shows everything grouped by environment. Access is gated by SSO
   breaching metric. Only for the instance the monitor itself connects to - for any
   other managed instance it says so rather than returning silence.
   `diagnostics.collect_for_scan()` routes RDS instances here instead of SSH.
+  Finds its own database from `DATABASE_URL`; `RDSDIAG_DSNS` (JSON, by instance
+  id) lets one monitor reach a managed instance it does not own - production
+  alerts for the whole estate, so it needs evidence from ApsaraDB Staging too.
+- `Backend/guidance.py` - **root cause + remediation steps**, one copy shared by
+  the alert email and the dashboard (served via `/api/status`). Written twice they
+  drift, and the copy you read at 2am is the stale one. `variants` give a sharper
+  cause where the evidence distinguishes one: a *refused* connection means the
+  host was reached and nothing is listening (wrong port), a *timeout* means the
+  packets went nowhere (instance down, or a security group dropping them).
 - `Backend/config.py` - env settings + `METRIC_TEMPLATES`, `SERVICE_CHECKS_BY_ROLE`,
   `INSTANCE_GROUPS` (seed only), `build_metrics()`/`build_service_checks()`.
 - `Backend/seed.py` - `flask seed` (idempotent: groups/instances/dev-user).
