@@ -176,6 +176,13 @@ are not duplicated onto every metric row and every history entry.
   every filesystem, so `_pick_point()` takes the *worst* value at the newest
   timestamp (max for `>` rules, min for `<`). Taking whichever sorted last could
   hide a root filesystem at 99% behind a 3% partition.
+- **Never hold a DB transaction across slow I/O.** `containers.refresh()` and the
+  alert path both do tens of seconds of SSH; a read transaction left open across
+  that pins its snapshot and stops VACUUM reclaiming the rows `prune_history()`
+  deletes every cycle, so `metric_results`/`service_results` bloat steadily. Both
+  now `db.session.rollback()` before the I/O and re-read for the write phase.
+  Visible as `idle in transaction` in `rdsdiag`'s ACTIVE QUERIES output - which is
+  how this was found.
 - Keep the scheduler to ONE process (single APScheduler). State is now in
   Postgres, but the scheduler must still be single; run gunicorn `--workers 1`.
 - The scheduler's background scan + the immediate first scan run inside an

@@ -168,11 +168,22 @@ def refresh() -> int:
         return 0
 
     targets = [(i.id, i.host.strip(), i.role or "") for i in instances]
+    wanted = [t[0] for t in targets]
+
+    # End the read transaction BEFORE the SSH round trips. Collection takes tens
+    # of seconds, and a transaction left open across it pins its snapshot - which
+    # stops VACUUM reclaiming the rows prune_history() deletes every cycle, so the
+    # two largest tables bloat steadily. Nothing has been written yet, so there is
+    # nothing to lose by ending it here.
+    db.session.rollback()
+
     workers = min(config.SCAN_CONCURRENCY, len(targets))
     with ThreadPoolExecutor(max_workers=workers) as pool:
         results = list(pool.map(_collect_one, targets))
 
-    by_id = {i.id: i for i in instances}
+    # Re-read for the write phase: the objects above belong to the transaction
+    # just ended.
+    by_id = {i.id: i for i in Instance.query.filter(Instance.id.in_(wanted)).all()}
     now = datetime.now(timezone.utc)
     collected = 0
     for inst_id, rows, error in results:

@@ -123,6 +123,14 @@ def _maybe_auto_alert(scan: dict) -> None:
                 reason, scan["breach_count"], scan["services_down_count"],
                 len(scan["stopped_reporting"]))
 
+    # Same reason as containers.refresh(): evidence collection is slow I/O, and a
+    # read transaction held open across it pins the snapshot and blocks VACUUM.
+    try:
+        from db import db
+        db.session.rollback()
+    except Exception:
+        pass
+
     # Identify WHICH service/query caused it, so the email carries evidence
     # rather than guesses. Never let a diagnostics failure block the alert.
     try:
