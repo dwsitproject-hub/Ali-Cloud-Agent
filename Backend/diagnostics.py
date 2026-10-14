@@ -32,15 +32,21 @@ log = logging.getLogger("diagnostics")
 
 # Metric label -> the focus argument passed to the remote script.
 _FOCUS_BY_LABEL = {"CPU": "cpu", "Memory": "memory", "Disk": "disk"}
-_ALLOWED_FOCUS = {"cpu", "memory", "disk", "service", "all"}
+_ALLOWED_FOCUS = {"cpu", "memory", "disk", "service", "containers", "all"}
 
 
 def enabled() -> bool:
     return bool(config.DIAG_ENABLED and config.DIAG_SSH_USER and config.DIAG_SSH_KEY)
 
 
-def _run_remote(host: str, focus: str) -> str | None:
-    """SSH to ``host`` and return the diagnostic text, or None on failure."""
+def _run_remote(host: str, focus: str, role: str = "", instance_id: str = "") -> str | None:
+    """SSH to ``host`` and return the diagnostic text, or None on failure.
+
+    ``role`` selects the SSH port via ``config.ssh_port_for_role`` so evidence
+    collection reaches hosts whose sshd is not on 22 — the same setting that fixes
+    the SSH service probe. DIAG_SSH_PORT still wins when set explicitly, for the
+    case where diagnostics uses a different port than the probe.
+    """
     if focus not in _ALLOWED_FOCUS:      # defensive: never pass through unknown input
         focus = "all"
     try:
@@ -58,7 +64,7 @@ def _run_remote(host: str, focus: str) -> str | None:
     try:
         client.connect(
             hostname=host,
-            port=config.DIAG_SSH_PORT,
+            port=config.diag_ssh_port_for_instance({"id": instance_id, "role": role}),
             username=config.DIAG_SSH_USER,
             key_filename=config.DIAG_SSH_KEY,
             timeout=config.DIAG_TIMEOUT,
@@ -71,6 +77,17 @@ def _run_remote(host: str, focus: str) -> str | None:
         _in, out, err = client.exec_command(cmd, timeout=config.DIAG_TIMEOUT)
         text = out.read().decode("utf-8", "replace").strip()
         problem = err.read().decode("utf-8", "replace").strip()
+        # Close the streams while the transport is still alive. Left to the
+        # garbage collector, their __del__ can run after `finally` has closed the
+        # client, and paramiko then raises inside __del__ ("'NoneType' object has
+        # no attribute 'time'"). Python only prints that as an ignored exception,
+        # so it breaks nothing - it just writes a traceback into the logs of a
+        # long-running process for no reason.
+        for stream in (_in, out, err):
+            try:
+                stream.close()
+            except Exception:
+                pass
         if not text:
             return f"(no output; stderr: {problem[:300]})" if problem else None
         if len(text) > config.DIAG_MAX_CHARS:
@@ -86,12 +103,28 @@ def _run_remote(host: str, focus: str) -> str | None:
             pass
 
 
+def run_focus(host: str, focus: str, role: str = "", instance_id: str = "") -> str | None:
+    """Public entry point for one remote focus.
+
+    containers.py needs the same SSH path (same user, same single whitelisted
+    sudo command, same per-role port) without reaching into a private helper, and
+    without gaining any capability the breach-evidence path does not already have.
+    """
+    return _run_remote(host, focus, role, instance_id)
+
+
 def _hosts_for_instances(instance_ids: set) -> dict:
-    """Map instance_id -> probe host from the DB inventory (blank hosts skipped)."""
+    """Map instance_id -> {host, role} from the DB inventory (blank hosts skipped).
+
+    The role comes along because it decides which SSH port to use (see
+    ``config.ssh_port_for_role``).
+    """
     try:
         from models import Instance
         rows = Instance.query.filter(Instance.id.in_(list(instance_ids))).all()
-        return {r.id: (r.host or "").strip() for r in rows if (r.host or "").strip()}
+        return {r.id: {"id": r.id, "host": (r.host or "").strip(),
+                       "role": (r.role or "").strip()}
+                for r in rows if (r.host or "").strip()}
     except Exception as exc:
         log.warning("diagnostics: could not resolve hosts: %s", exc)
         return {}
@@ -129,12 +162,20 @@ def collect_for_scan(scan: dict) -> dict:
     hosts = _hosts_for_instances(set(wanted))
     results: dict = {}
     for iid, meta in list(wanted.items())[:config.DIAG_MAX_HOSTS]:
-        host = hosts.get(iid)
+        target = hosts.get(iid) or {}
+        host = target.get("host")
         if not host:
             continue      # no probe host configured for this instance
         focuses = meta["focuses"]
         focus = focuses.pop() if len(focuses) == 1 else "all"
-        output = _run_remote(host, focus)
+        # A managed instance has no shell. Route it to the SQL collector rather
+        # than SSHing at an endpoint that will never answer.
+        if config.metric_templates_for({"id": iid, "role": target.get("role", "")})                 is config.METRIC_TEMPLATES_RDS:
+            import rdsdiag
+            output = rdsdiag.collect({"id": iid, "name": meta["name"], "host": host},
+                                     focus)
+        else:
+            output = _run_remote(host, focus, target.get("role", ""), iid)
         if output:
             results[meta["name"]] = {"host": host, "focus": focus, "output": output}
             log.info("diagnostics collected from %s (%s)", host, focus)

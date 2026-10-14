@@ -6,7 +6,11 @@ read-only script, and embeds the result in the alert email — so the mail tells
 **which container/process** was responsible and **what activity** it was doing
 (including the actual SQL and how long it had been running).
 
-**Deploy branch: `UAT`** (the repository's default branch).
+**Deploy branch: whichever branch that server already runs.** `UAT` is the
+repository default, but the staging and production servers on this estate were
+deployed from **`SIT`** — check with `git -C /opt/ali-cloud-agent rev-parse
+--abbrev-ref HEAD` before any `git pull` below and use that branch, or you will
+roll the server back.
 
 ## Do it in this order
 
@@ -20,15 +24,78 @@ read-only script, and embeds the result in the alert email — so the mail tells
 
 ### Progress tracker
 
-Fill this in as you go — the key from Part 1 is the same for every host:
+Fill this in as you go. Part 1 runs **once per environment** (staging and production each have their own
+backend server, so each needs its own keypair). Part 2 runs per host.
 
-| Host | Role | 2a user | 2b script | 2c sudoers | 2d key | 2e verify | 2f port 22 |
+**Staging** — ✅ **complete**, and every staging host trusts **both** monitors:
+
+| Host | Role | 2a | 2b | 2c | 2d | 2e | network |
 |---|---|---|---|---|---|---|---|
-| DB Staging | database | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ |
-| Backend Staging | app + monitor | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
-| Frontend Staging | web | ☐ | ☐ | ☐ | ☐ | ☐ | ☐ |
+| DB Staging | database | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ :22 |
+| Backend Staging | app + monitor | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ :22 |
+| Frontend Staging | web | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ :22 |
 
-(Actual IPs for this estate are in the internal staging runbook, not in this repo.)
+**Production** — ✅ **complete**. Part 1, all three hosts, and Part 3 done;
+verified in-container against all three (`enabled: True`, 3/3 OK).
+
+| Host | Role | 2a | 2b | 2c | 2d | 2e | network |
+|---|---|---|---|---|---|---|---|
+| DB Production | database | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ **:22** |
+| Backend Production | app + monitor | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ **:1818** |
+| Frontend Production | web | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ **:1818** |
+| MCP Gateway (`SrvMCP`) | app host, no repo | ☑ | ☑ | ☑ | ☑ | ☑ | ☑ **:1818** |
+
+### Why staging hosts carry TWO keys
+
+Production is the estate's only alerting source (see the production runbook §11),
+so it is production that needs to collect evidence when a *staging* instance
+breaches. The staging monitor separately needs access for its own dashboard's
+docker panel. Each staging host therefore holds:
+
+| `from=` | Key | Purpose |
+|---|---|---|
+| `172.28.92.57` | staging | the staging monitor, reaching other hosts |
+| `192.168.32.0/20` | staging | the staging monitor reaching **its own host** (Backend Staging only) |
+| `172.28.80.51` | production | breach diagnostics from the alerting monitor |
+
+Verified from the production BE, passing instance ids so the
+`PROBE_SSH_PORT_OVERRIDES` path is exercised — production's `frontend`/`backend`
+roles default to 1818, and only the per-instance override reaches staging's 22:
+
+```bash
+docker exec cloud-agent-app python -c "
+import diagnostics as d
+for host, role, iid in (('172.28.92.60','db','i-k1ab5rh48e40enbqa7ii'),('172.28.92.56','frontend','i-k1a5ja5hi7ps6aa7x88r'),('172.28.92.57','backend','i-k1a4m0oobaw170notm7p')):
+    out = d.run_focus(host,'containers',role,iid)
+    print(host, role, '->', 'OK' if out and 'HOSTNAME' in out else 'FAILED')
+"
+```
+
+### Two things learned provisioning six hosts
+
+**Container subnets are per project and differ per host.** Production BE detected
+`172.25.0.0/16`; Backend Staging detected `192.168.32.0/20`. Never assume the
+usual `172.17`/`172.18` — always run the detection command, and re-run it if the
+network is ever recreated, or that host silently stops reporting.
+
+**Partially-provisioned hosts produce duplicate `authorized_keys` lines.** Four of
+the six hosts already had a `cloudmonitor` user from an earlier attempt, so
+appending produced duplicates (Backend Staging ended with 6 lines for 3 distinct
+entries). Harmless — sshd takes the first match — but confusing during an
+incident. Check and dedupe:
+
+```bash
+grep -no 'from="[^"]*"' /home/cloudmonitor/.ssh/authorized_keys
+```
+
+```bash
+awk '!seen[$0]++' /home/cloudmonitor/.ssh/authorized_keys > /tmp/ak && mv /tmp/ak /home/cloudmonitor/.ssh/authorized_keys && chown cloudmonitor:cloudmonitor /home/cloudmonitor/.ssh/authorized_keys && chmod 600 /home/cloudmonitor/.ssh/authorized_keys && grep -o 'from="[^"]*"' /home/cloudmonitor/.ssh/authorized_keys
+```
+
+Watch for a *stale* subnet in that listing — a `from=` for a subnet the current
+network no longer uses is dead weight that stops working silently.
+
+(Actual IPs for this estate are in the internal runbooks, not in this repo.)
 
 ---
 
@@ -41,7 +108,7 @@ Fill this in as you go — the key from Part 1 is the same for every host:
 | It is **not** in the `docker` group | that group is root-equivalent; the single sudo entry is narrower |
 | The key only works from one source | `from="<BACKEND_IP>"` restriction in `authorized_keys` |
 | The script is **read-only** | inspects processes/containers/queries; changes nothing. Plain bash — review it before installing |
-| No app data reaches a shell | the only argument is a keyword validated against a fixed allow-list (`cpu`/`memory`/`disk`/`service`/`all`) |
+| No app data reaches a shell | the only argument is a keyword validated against a fixed allow-list (`cpu`/`memory`/`disk`/`service`/`containers`/`all`) |
 | Failures are contained | hard timeouts, max 3 hosts per alert; any error just means the alert falls back to generic guidance |
 
 The script is **`deploy/cam-diag.sh`** in this repo. Have each host owner read it.
@@ -61,7 +128,10 @@ sudo cat /opt/ali-cloud-agent/secrets/diag_ed25519.pub
 ```
 
 The private key never leaves the backend server. `secrets/` is git-ignored.
-**One keypair serves all hosts** — do not generate a new one per host.
+**One keypair per MONITOR, serving every host that monitor watches** — do not
+generate one per host. This estate has two: staging's and production's. A host
+watched by both carries both public keys, on separate `authorized_keys` lines
+with different `from=` restrictions (see the tracker above).
 
 ---
 
@@ -83,6 +153,19 @@ PUBKEY='ssh-ed25519 AAAA...replace-with-Part-1-output... cloud-agent-diag'
 
 > ⚠️ Never paste `<SOMETHING>` into a shell — bash reads `<` as an input redirect
 > and fails with `No such file or directory`. That is why these are variables.
+>
+> ⚠️ **Shell variables die with the session.** A web terminal (ECS Workbench)
+> hands you a new session on reconnect or in a new tab, and these variables are
+> then empty — step 2d silently writes `from="",...` with no key, producing a
+> malformed `authorized_keys` line that grants nothing and is easy to miss because
+> every command still "succeeds". Either re-paste 2·0 in the session you are
+> actually using, or paste 2d with the values written in literally. Check with
+> `cat /home/cloudmonitor/.ssh/authorized_keys` — an entry with `from=""` or no
+> `ssh-ed25519 AAAA...` portion must be removed:
+>
+> ```bash
+> sed -i '/^from="",/d' /home/cloudmonitor/.ssh/authorized_keys
+> ```
 
 ### 2a. Create the unprivileged user
 
@@ -107,7 +190,7 @@ path on all of them. Option 2 exists only for a host with no checkout at all.
 
 ```bash
 cd /opt/ali-cloud-agent
-git pull origin UAT
+git pull origin "$(git rev-parse --abbrev-ref HEAD)"
 ls -l deploy/cam-diag.sh                     # confirm the file is present
 install -m 0755 -o root -g root deploy/cam-diag.sh /usr/local/bin/cam-diag
 ```
@@ -118,11 +201,39 @@ Note the first command runs on the **backend**, the second on the target host:
 ```bash
 # 1) on the BACKEND server — set HOST_IP to the host you are provisioning:
 HOST_IP='10.0.0.56'
-scp /opt/ali-cloud-agent/deploy/cam-diag.sh root@"$HOST_IP":/tmp/
+scp -P 22 /opt/ali-cloud-agent/deploy/cam-diag.sh root@"$HOST_IP":/tmp/   # -P 1818 on prod FE/BE
 
 # 2) then on THAT host:
 install -m 0755 -o root -g root /tmp/cam-diag.sh /usr/local/bin/cam-diag
 ```
+
+> **Getting the script onto a host with no repo and no key.** MCP Gateway took
+> three attempts; the working route is below.
+>
+> * `scp` as **root** fails with `Permission denied (publickey)` if the target
+>   only trusts keys you do not have.
+> * The backend's own `/root/.ssh/id_ed25519` is **passphrase-protected**, so it
+>   cannot be used unattended. A passphrase cannot be recovered from a key file -
+>   only tested with `ssh-keygen -y -f <key>`. Check which keys are usable:
+>
+>   ```bash
+>   for k in /root/.ssh/id_ed25519 /opt/ali-cloud-agent/secrets/diag_ed25519; do printf '%-48s ' "$k"; ssh-keygen -y -f "$k" </dev/null >/dev/null 2>&1 && echo usable || echo "passphrase protected"; done
+>   ```
+>
+> * Serving the file over HTTP from the backend (`python3 -m http.server`) is
+>   clean but was **blocked by the security group** between those two subnets.
+> * What worked: temporarily authorise the **diagnostics** public key (no
+>   passphrase, and destined for that host anyway) against the host's admin user,
+>   `scp -i` the file, then remove that line. Give the temporary entry a distinct
+>   comment such as `cloud-agent-diag-TEMP` so it can be deleted exactly, and omit
+>   `no-pty` on it - `scp` needs the channel, unlike the exec-only access
+>   `cloudmonitor` gets.
+>
+> Verify the bytes before installing: the file is about to receive a `NOPASSWD`
+> sudoers entry, so `sha256sum` on both ends is not ceremony.
+>
+> On a host where you are not root, every step takes `sudo`, and
+> `printf ... | sudo tee -a` replaces `printf ... >>`.
 
 > `Could not resolve hostname :` means `HOST_IP` was empty — set it first, and make
 > sure you are running the `scp` on the **backend** server, not the target.
@@ -184,7 +295,9 @@ Expect `== HOST ==` / `== CPU SNAPSHOT ==`. *"sudo: a password is required"* mea
 
 ### 2f. Network
 
-Allow **the backend server's IP → this host `:22`** in the security group.
+Allow **the backend server's IP → this host's sshd port** in the security group.
+That is `:22` on most hosts but **`:1818` on the production FE and BE boxes** —
+check with `ss -tlnp | grep sshd` on the host rather than assuming.
 
 ### 2g. Confirm from the backend server
 
@@ -236,7 +349,16 @@ wc -l /home/cloudmonitor/.ssh/authorized_keys      # expect 2
 ```
 
 The subnet is Docker-internal and not routable from outside the host, so this remains
-least-privilege. Re-running the container-side check should then report `OK` for the
+least-privilege. On the production BE it detected `172.25.0.0/16` — do not assume
+the usual `172.17`/`172.18`; Compose allocates per project, and the value changes
+if the network is recreated, which would silently break collection for that one
+host. Re-run the detection command if `docker network prune` or a
+`docker compose down` has removed the network since.
+
+**Do not use 2g to verify this host.** `ssh` from its own shell to its own IP
+carries the host's source address, so it matches the FIRST line and passes even
+if the subnet line is wrong or missing. Only the in-container check (3e) proves
+it. Re-running the container-side check should then report `OK` for the
 backend's own IP.
 
 **Frontend / non-database hosts** — everything works except the PostgreSQL
@@ -274,12 +396,42 @@ printf '%s\n' \
   'DIAG_ENABLED=true' \
   'DIAG_SSH_USER=cloudmonitor' \
   'DIAG_SSH_KEY=/run/secrets/diag_ed25519' \
-  'DIAG_SSH_PORT=22' \
   'DIAG_REMOTE_SCRIPT=/usr/local/bin/cam-diag' \
-  'DIAG_TIMEOUT=20' \
+  'DIAG_TIMEOUT=45' \
   'DIAG_MAX_HOSTS=3' >> .env
 grep '^DIAG_' .env
 ```
+
+### The dashboard's "Docker services" panel uses this same setup
+
+Once the SSH identity below works, the dashboard shows every container each host
+reports, with its docker health state (`healthy`, `unhealthy`, `restarting`,
+`stopped`). That comes from one extra allow-listed focus, `cam-diag containers`,
+which runs a single `docker ps` and prints nothing else - no new privilege beyond
+what breach evidence already needs.
+
+Two consequences worth knowing:
+
+* **Re-install `cam-diag.sh` on every host after upgrading the app.** An older
+  copy does not know the `containers` argument and falls back to printing the full
+  human-readable report, which the parser will discard - the panel stays empty
+  with no obvious error.
+* It runs **every scan cycle**, not only on a breach, so keep the host script
+  current; `CAM_DIAG_MAX_CONTAINERS` (default 60) bounds the output, and
+  `CONTAINER_ROLES` keeps the monitor from asking hosts that have no docker (a
+  managed RDS instance, a router, a Windows box).
+
+Set `CONTAINERS_ENABLED=false` to turn the panel off while leaving breach
+diagnostics enabled.
+
+**`DIAG_SSH_PORT` is deliberately absent above.** Left unset, diagnostics
+connects on the same port as that role's SSH *probe* - `PROBE_SSH_PORT`, or
+`PROBE_<ROLE>_SSH_PORT` for a single role. A host whose sshd is not on 22 is
+then corrected in one place and both the probe and evidence collection follow.
+Set `DIAG_SSH_PORT` only if diagnostics must use a different port than the probe.
+
+If a host's SSH probe is red with `ConnectionRefusedError`, diagnostics will fail
+against that host for the same reason - fix the port before enabling this.
 
 `DIAG_MAX_HOSTS=3` caps how many hosts are contacted per alert, so a multi-host
 breach cannot stretch the scan cycle. Raise it if you monitor more than three hosts
@@ -289,7 +441,7 @@ and want evidence from all of them.
 
 ```bash
 cd /opt/ali-cloud-agent
-git pull origin UAT
+git pull origin "$(git rev-parse --abbrev-ref HEAD)"
 docker compose -f docker-compose.app.yml up -d --build
 ```
 

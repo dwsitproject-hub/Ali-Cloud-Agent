@@ -58,6 +58,42 @@ def _metrics_rows(results):
     return "".join(rows)
 
 
+def _stopped_section(stopped):
+    """Metrics that were reporting and now are not.
+
+    Worth its own section because it is NOT the same as a breach and not the same
+    as healthy: a metric with no value is never compared against its threshold,
+    so an instance whose agent dies looks fine on every dashboard while it burns.
+    """
+    if not stopped:
+        return ""
+    rows = []
+    for m in stopped:
+        why = html.escape(m.get("error") or "no datapoints returned")
+        rows.append(
+            f"<tr>"
+            f"<td style='padding:6px 10px;border-bottom:1px solid #eee;font-weight:600'>{html.escape(m.get('instance_name') or '')}</td>"
+            f"<td style='padding:6px 10px;border-bottom:1px solid #eee'>{html.escape(m.get('label') or '')}</td>"
+            f"<td style='padding:6px 10px;border-bottom:1px solid #eee;color:#b8860b'>STOPPED REPORTING"
+            f"<div style='color:#b8860b;font-size:11px'>{why}</div></td>"
+            f"</tr>"
+        )
+    return (
+        "<h3 style='font-size:14px;color:#b8860b;margin:18px 0 6px'>Metrics that stopped reporting</h3>"
+        "<p style='color:#555;font-size:13px;margin:0 0 6px'>These were reporting on the previous "
+        "scan and returned nothing on this one, so their thresholds could not be "
+        "evaluated. Usual causes: the CloudMonitor agent stopped (check "
+        "<code>systemctl status cloudmonitor</code> / <code>aliyun-service</code>), "
+        "or the host is under enough memory pressure that the agent cannot run — "
+        "which is itself the incident. Treat a value of “none” as unknown, never as OK.</p>"
+        "<table style='border-collapse:collapse;width:100%;font-size:14px'>"
+        "<thead><tr style='text-align:left;color:#888;font-size:12px;text-transform:uppercase'>"
+        "<th style='padding:6px 10px'>Instance</th><th style='padding:6px 10px'>Metric</th>"
+        "<th style='padding:6px 10px'>Status</th></tr></thead>"
+        f"<tbody>{''.join(rows)}</tbody></table>"
+    )
+
+
 def _services_section(services_down):
     if not services_down:
         return ("<p style='color:#27ae60;font-size:13px;margin:14px 0 4px'>"
@@ -180,6 +216,66 @@ def _guidance_block(title: str, spec: dict) -> str:
     )
 
 
+def _top_consumers_section(scan: dict) -> str:
+    """Name the service, before any raw evidence.
+
+    A host percentage is not actionable on a shared box running twenty
+    containers. This answers "which one" in a table you can read in five
+    seconds, and it appears above the full evidence dump rather than inside it.
+    """
+    data = scan.get("top_consumers") or {}
+    if not data:
+        return ""
+
+    def rows_for(rows, metric):
+        out = []
+        for c in rows:
+            value = c.get("cpu_pct") if metric == "cpu" else c.get("mem_pct")
+            if value is None:
+                continue
+            extra = c.get("mem_usage") if metric == "mem" else ""
+            hot = "#c0392b" if value >= 50 else "#24292e"
+            out.append(
+                f"<tr>"
+                f"<td style='padding:4px 10px;border-bottom:1px solid #eee;font-family:ui-monospace,Menlo,monospace;font-size:12px'>{html.escape(c.get('name',''))}</td>"
+                f"<td style='padding:4px 10px;border-bottom:1px solid #eee;color:{hot};font-weight:600;text-align:right'>{value}%</td>"
+                f"<td style='padding:4px 10px;border-bottom:1px solid #eee;color:#777;font-size:12px'>{html.escape(extra or '')}</td>"
+                f"<td style='padding:4px 10px;border-bottom:1px solid #eee;color:#777;font-size:12px'>{html.escape(c.get('health',''))}</td>"
+                f"</tr>")
+        return "".join(out)
+
+    blocks = []
+    for name, d in data.items():
+        when = d.get("updated_at") or "unknown"
+        tables = []
+        for metric, title in (("cpu", "Top CPU"), ("mem", "Top memory")):
+            body = rows_for(d.get(metric) or [], metric)
+            if not body:
+                continue
+            tables.append(
+                f"<div style='margin:8px 0 0'>"
+                f"<div style='font-size:12px;color:#555;margin-bottom:3px'>{title}</div>"
+                f"<table style='border-collapse:collapse;width:100%'>{body}</table></div>")
+        if not tables:
+            continue
+        blocks.append(
+            f"<div style='margin:10px 0 0;padding:10px 12px;background:#fff;"
+            f"border:1px solid #e6e6e6;border-left:3px solid #2c3e50;border-radius:4px'>"
+            f"<div style='font-weight:700;font-size:13px'>{html.escape(name)}</div>"
+            f"<div style='font-size:11px;color:#888'>container usage sampled {html.escape(when)}</div>"
+            f"{''.join(tables)}</div>")
+
+    if not blocks:
+        return ""
+    return ("<h3 style='font-size:14px;color:#2c3e50;margin:18px 0 6px'>"
+            "Which service is consuming the host</h3>"
+            "<p style='color:#555;font-size:13px;margin:0'>Ranked from the host's own "
+            "<code>docker stats</code>. A figure at or above 50% is highlighted. "
+            "Values are from the previous scan cycle, so treat them as the shape of "
+            "the load rather than an instantaneous reading.</p>"
+            + "".join(blocks))
+
+
 def _evidence_section(scan: dict) -> str:
     """Live on-host evidence: which service/process/query caused the breach.
 
@@ -277,14 +373,18 @@ def build_email(scan: dict) -> dict:
     n_breach = len(scan.get("breaches", []))
     services_down = scan.get("services_down", [])
     n_down = len(services_down)
+    stopped = scan.get("stopped_reporting", [])
+    n_stopped = len(stopped)
     when = scan.get("scanned_at", datetime.now(timezone.utc).isoformat())
 
-    if n_breach or n_down:
+    if n_breach or n_down or n_stopped:
         parts = []
         if n_breach:
             parts.append(f"{n_breach} threshold breach{'es' if n_breach != 1 else ''}")
         if n_down:
             parts.append(f"{n_down} service{'s' if n_down != 1 else ''} down")
+        if n_stopped:
+            parts.append(f"{n_stopped} metric{'s' if n_stopped != 1 else ''} stopped reporting")
         subject = "[CloudMonitor] " + ", ".join(parts)
         status_color = "#c0392b"
         status_text = " & ".join(parts) + " detected"
@@ -294,8 +394,9 @@ def build_email(scan: dict) -> dict:
         status_text = "All clear - metrics within thresholds, services up"
 
     metric_rows = _metrics_rows(scan.get("results", []))
-    services_html = _services_section(services_down)
-    diagnosis_html = _evidence_section(scan) + _diagnosis_section(scan)
+    services_html = _services_section(services_down) + _stopped_section(stopped)
+    diagnosis_html = (_top_consumers_section(scan) + _evidence_section(scan)
+                      + _diagnosis_section(scan))
 
     body = f"""\
 <div style="font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif;max-width:680px;margin:auto">

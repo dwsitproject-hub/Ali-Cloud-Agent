@@ -47,12 +47,27 @@ def run_scan_job(auto_alert=None) -> dict:
         scan["services_total"] = 0
 
     state.set_last_scan(scan)
-    log.info("scan complete: mode=%s breaches=%s/%s services_down=%s/%s",
+    log.info("scan complete: mode=%s breaches=%s/%s services_down=%s/%s no_data=%s",
              scan["mode"], scan["breach_count"], scan["total"],
-             scan["services_down_count"], scan["services_total"])
+             scan["services_down_count"], scan["services_total"],
+             scan.get("no_data_count", 0))
 
     if auto_alert:
         _maybe_auto_alert(scan)
+
+    # Instance specs (slow cadence, so this is usually a no-op) and the docker
+    # workload list. Both are dashboard context rather than alert inputs, so
+    # neither is allowed to break a scan cycle.
+    try:
+        import cloudspec
+        cloudspec.refresh_specs()
+    except Exception:
+        log.exception("instance spec refresh failed")
+    try:
+        import containers
+        containers.refresh()
+    except Exception:
+        log.exception("container collection failed")
 
     # Keep history bounded (runs every cycle; only rows past the retention
     # window are removed, so it is a cheap indexed delete most cycles).
@@ -87,8 +102,34 @@ def _maybe_auto_alert(scan: dict) -> None:
     if not reason:
         return
 
-    log.warning("auto-alert (%s): %s metric breach, %s service down",
-                reason, scan["breach_count"], scan["services_down_count"])
+    # A "stopped reporting" alert must be able to say WHAT went quiet, otherwise
+    # the email arrives with an empty problem list.
+    try:
+        scan["stopped_reporting"] = state.stopped_reporting()
+    except Exception:
+        log.exception("could not resolve stopped-reporting metrics")
+        scan["stopped_reporting"] = []
+
+    # Which service on the box is actually heavy. Uses the rows collected on the
+    # previous cycle, so naming the culprit costs no extra SSH in the alert path.
+    try:
+        import containers
+        scan["top_consumers"] = containers.for_alert(scan)
+    except Exception:
+        log.exception("top-consumer lookup failed; alerting without it")
+        scan["top_consumers"] = {}
+
+    log.warning("auto-alert (%s): %s metric breach, %s service down, %s stopped reporting",
+                reason, scan["breach_count"], scan["services_down_count"],
+                len(scan["stopped_reporting"]))
+
+    # Same reason as containers.refresh(): evidence collection is slow I/O, and a
+    # read transaction held open across it pins the snapshot and blocks VACUUM.
+    try:
+        from db import db
+        db.session.rollback()
+    except Exception:
+        pass
 
     # Identify WHICH service/query caused it, so the email carries evidence
     # rather than guesses. Never let a diagnostics failure block the alert.

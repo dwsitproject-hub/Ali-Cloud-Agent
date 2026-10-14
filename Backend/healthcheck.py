@@ -34,12 +34,23 @@ def _tcp_probe(host: str, port: int, timeout: float):
         return False, ms, None, f"{type(exc).__name__}: {exc}"
 
 
-def _http_probe(url: str, expect, timeout: float):
+def _http_probe(url: str, expect, timeout: float, host_header: str | None = None):
+    """GET ``url`` and check the status code.
+
+    ``host_header`` matters whenever the target runs name-based virtual hosts.
+    Connecting by IP sends ``Host: <ip>``, which matches no ``server_name``, so
+    nginx serves its *default* server - typically a 404 that looks like an outage
+    while the site itself is perfectly healthy. Sending the real hostname probes
+    the vhost we actually care about, over the same IP.
+    """
     start = time.monotonic()
     ctx = ssl.create_default_context()
     ctx.check_hostname = False
     ctx.verify_mode = ssl.CERT_NONE  # tolerate self-signed certs on internal hosts
-    req = urllib.request.Request(url, method="GET", headers={"User-Agent": "CloudAgentMonitoring/1.0"})
+    headers = {"User-Agent": "CloudAgentMonitoring/1.0"}
+    if host_header:
+        headers["Host"] = host_header
+    req = urllib.request.Request(url, method="GET", headers=headers)
     try:
         with urllib.request.urlopen(req, timeout=timeout, context=ctx) as resp:
             code = resp.getcode()
@@ -85,8 +96,12 @@ def check_one(check: dict) -> dict:
 
     if check["type"] == "http":
         url = f"{check['scheme']}://{host}:{check['port']}{check['path']}"
-        up, ms, detail, err = _http_probe(url, check["expect"], config.HEALTHCHECK_TIMEOUT)
-        result["target"] = url
+        host_header = check.get("host_header")
+        up, ms, detail, err = _http_probe(url, check["expect"],
+                                          config.HEALTHCHECK_TIMEOUT, host_header)
+        # Show the vhost in the target, because "404 at http://10.0.0.5/" and
+        # "404 at http://10.0.0.5/ as app.example.com" are different diagnoses.
+        result["target"] = f"{url} (Host: {host_header})" if host_header else url
     else:
         up, ms, detail, err = _tcp_probe(host, check["port"], config.HEALTHCHECK_TIMEOUT)
         result["target"] = f"{host}:{check['port']}"

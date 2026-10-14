@@ -52,6 +52,42 @@ dashboard shows everything grouped by environment. Access is gated by SSO
   public client)**: `/auth/oidc/login` + `/auth/oidc/callback`; plus
   `/auth/dev-login`, `/auth/info` (public), `/auth/login`+`/auth/logout` (redirect
   to `FRONTEND_URL`). `init_oauth(app)` registers the client.
+- `Backend/cloudspec.py` - provider-reported **specs** (vCPU/RAM/disk/type/status)
+  via ECS `DescribeInstances`+`DescribeDisks` and RDS `DescribeDBInstanceAttribute`;
+  cached on the Instance row, refreshed every `SPECS_REFRESH_HOURS`. Gives each
+  percentage a denominator - "95% memory" reads differently on 4 GB than 64 GB.
+- `Backend/containers.py` - **docker workloads and their resource usage**, over
+  the same least-privilege SSH path as diagnostics (`cam-diag containers`, one
+  extra allow-listed focus running `docker ps` + `docker stats`). Answers both
+  "does docker call it healthy?" and "which service is eating the host?" -
+  `healthcheck.py` only sees reachability, and a host percentage is not actionable
+  on a box running twenty containers. `top_consumers()` ranks them for the alert
+  email; `for_alert()` reads the previous cycle's rows so naming the culprit costs
+  no extra SSH in the alert path. Needs the `DIAG_SSH_*` identity; collects
+  nothing (and says so) without it.
+- `Backend/rdsdiag.py` - the same question for a **managed database**, which has
+  no shell. Collects active queries, connections by client, longest transactions
+  and (where the extension exists) `pg_stat_statements` over SQL, scoped to the
+  breaching metric. Only for the instance the monitor itself connects to - for any
+  other managed instance it says so rather than returning silence.
+  `diagnostics.collect_for_scan()` routes RDS instances here instead of SSH.
+  Finds its own database from `DATABASE_URL`; `RDSDIAG_DSNS` (JSON, by instance
+  id) lets one monitor reach a managed instance it does not own - production
+  alerts for the whole estate, so it needs evidence from ApsaraDB Staging too.
+- `Backend/history_api.py` - `/api/metrics/history`: the metric series behind the
+  dashboard charts, read from `metric_results` (kept `HISTORY_RETENTION_DAYS`).
+  A card answers "is it bad now"; this answers "was it bad, when, for how long".
+  Buckets keep the **worst** value, never the mean - a one-cycle spike to 81.55%
+  averaged over an hour reads as ~8% and vanishes, which is the exact event the
+  charts exist to find. `>` rules keep the max, `<` rules the min, matching
+  `_pick_point()`. Empty buckets are emitted as `null` on a continuous axis, so a
+  reporting gap is a hole rather than a line drawn flat across it.
+- `Backend/guidance.py` - **root cause + remediation steps**, one copy shared by
+  the alert email and the dashboard (served via `/api/status`). Written twice they
+  drift, and the copy you read at 2am is the stale one. `variants` give a sharper
+  cause where the evidence distinguishes one: a *refused* connection means the
+  host was reached and nothing is listening (wrong port), a *timeout* means the
+  packets went nowhere (instance down, or a security group dropping them).
 - `Backend/config.py` - env settings + `METRIC_TEMPLATES`, `SERVICE_CHECKS_BY_ROLE`,
   `INSTANCE_GROUPS` (seed only), `build_metrics()`/`build_service_checks()`.
 - `Backend/seed.py` - `flask seed` (idempotent: groups/instances/dev-user).
@@ -61,12 +97,16 @@ dashboard shows everything grouped by environment. Access is gated by SSO
 **API-only backend** (UI is the separate static frontend). GET `/api/status` |
 POST `/api/scan` (`?auto_alert=true`) | POST `/api/send` | GET `/api/csrf` |
 GET `/api/health` (liveness, public) | GET `/api/ready` (readiness: DB + scan
-freshness, public) | GET/POST `/api/instances`, GET `/api/instances/meta`,
+freshness, public) | GET `/api/metrics/history` (`?instance_id=&hours=` or
+`&from=&to=&points=`) | GET/POST `/api/instances`, GET `/api/instances/meta`,
 PATCH/DELETE `/api/instances/<id>` | GET `/auth/oidc/login` +
 `/auth/oidc/callback` (OIDC), GET `/auth/info` (public), `/auth/dev-login`,
 `/auth/login` (→ FE login), `/auth/logout`.
 All routes require login except `/api/health`, `/api/ready`, and `/auth/*`.
 `/api/*` returns 401 JSON when anonymous. Login/SSO redirect to `FRONTEND_URL`.
+`/api/status` also carries `instances: {id: {spec, containers, ...}}` - current
+state per instance, kept out of the scan document so specs and container lists
+are not duplicated onto every metric row and every history entry.
 
 ## Run / dev
 - Easiest: `docker compose up --build` = fe (**:8080**) + app API (**:5000**) +
@@ -103,6 +143,64 @@ All routes require login except `/api/health`, `/api/ready`, and `/auth/*`.
   and no threshold is ever evaluated.
 
 ## Conventions / gotchas
+- **A managed instance cannot be diagnosed over SSH.** ApsaraDB has no shell, so
+  `diagnostics` routes anything matching `METRIC_TEMPLATES_RDS` to `rdsdiag` and
+  collects over SQL instead. Before this, an RDS CPU breach alerted with generic
+  guidance only - the evidence collector failed silently against an endpoint that
+  can never answer.
+- **The dashboard leads with a triage band**, not with cards. `attentionItems()`
+  in `index.html` flattens everything wrong into one ranked list - provider status
+  first (a stopped instance explains its own dead metrics), then breaches with the
+  heaviest container named, then down probes, then unhealthy containers - each
+  with a one-line next step. Instances with problems sort to the front of their
+  group. The band is hidden entirely when nothing is wrong, so its presence is the
+  signal.
+- **A metric with no value is NOT a healthy metric.** `_breached(None, ...)` is
+  `False`, so a blank value is never compared against its threshold. This once hid
+  a real incident: Backend Staging ran at 95% memory for an hour with no alert,
+  because `DescribeMetricLast` kept returning an empty datapoint list. Defences:
+  `agent1_scanner._query_metric_recent()` re-asks over an explicit window
+  (`METRIC_LOOKBACK_MINUTES`) when the "last" call is empty, and
+  `state.recent_problem_key_sets()` emits a `<key>:nodata` problem key for a
+  metric that *stops* reporting (`ALERT_ON_NO_DATA`, on by default; only for
+  metrics that had a value in the previous run, so agent-less hosts stay quiet).
+  `agent2_alerter._stopped_section()` names them in the email.
+- **Probe settings are per ROLE, which one monitor watching two environments
+  breaks.** The production monitor's `frontend` role uses sshd 1818 and the
+  production vhost; a staging frontend in the same inventory needs 22 and the
+  staging vhost. `PROBE_SSH_PORT_OVERRIDES` / `PROBE_HTTP_HOST_OVERRIDES`
+  (`instance-id:value,...`) let one instance deviate, via
+  `config.ssh_port_for_instance()` / `http_host_for_instance()`; diagnostics
+  follows through `diag_ssh_port_for_instance()`. Env maps rather than columns:
+  no migration, no UI, and they sit beside the `PROBE_*` settings they override.
+- **An HTTP probe by IP hits nginx's *default* vhost.** A shared nginx routes on
+  `server_name`; `Host: <ip>` matches none, so it answers from the default server -
+  typically a 404 the probe reports as an outage while the site is healthy (this
+  produced a recurring false "Frontend Staging HTTP DOWN / unexpected status 404").
+  `config.probe_http_host()` supplies the real hostname (from `FRONTEND_URL`, or
+  `PROBE_FE_HTTP_HOST`) as a `Host` header, so the probe tests the vhost we serve
+  over the same IP. 404 is still down - the fix targets the right vhost rather than
+  widening what counts as healthy.
+- **Some metrics return one series per device.** `diskusage_utilization` reports
+  every filesystem, so `_pick_point()` takes the *worst* value at the newest
+  timestamp (max for `>` rules, min for `<`). Taking whichever sorted last could
+  hide a root filesystem at 99% behind a 3% partition.
+- **Never hold a DB transaction across slow I/O.** `containers.refresh()` and the
+  alert path both do tens of seconds of SSH; a read transaction left open across
+  that pins its snapshot and stops VACUUM reclaiming the rows `prune_history()`
+  deletes every cycle, so `metric_results`/`service_results` bloat steadily. Both
+  now `db.session.rollback()` before the I/O and re-read for the write phase.
+  Visible as `idle in transaction` in `rdsdiag`'s ACTIVE QUERIES output - which is
+  how this was found.
+- **A card's metric and its container usage are NOT simultaneous.** The metric
+  comes from CloudMonitor (an average over the agent's window); container usage
+  from a `docker stats` sample taken later in the same cycle over SSH. A spike
+  short enough to live in one and not the other produces "CPU 81% but every
+  container reads 0%", which looks like a bug. The card now stamps the container
+  panel with `containers_updated_at` (`sampledAt()` in `index.html`). Note also
+  that a container in a **restart loop** burns host CPU that no container can be
+  charged for - the work happens in the daemon, and the container is rarely
+  running when `docker stats` samples it.
 - Keep the scheduler to ONE process (single APScheduler). State is now in
   Postgres, but the scheduler must still be single; run gunicorn `--workers 1`.
 - The scheduler's background scan + the immediate first scan run inside an
@@ -123,6 +221,6 @@ All routes require login except `/api/health`, `/api/ready`, and `/auth/*`.
 
 ## Ideas / backlog
 - Docker container visibility (SSH `docker ps` or Docker API tier).
-- Per-instance thresholds; historical metric charts; scan-history pruning.
+- Per-instance thresholds; scan-history pruning.
 - Per-channel alerts (Slack/webhook); alert de-duplication.
 - Single-use SSO token enforcement (jti/replay table) beyond the 60s exp window.

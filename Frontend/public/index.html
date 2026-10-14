@@ -43,10 +43,65 @@
   .chip.breach { border-color:var(--bad); } .chip.breach .chip-val { color:var(--bad); }
   .chip.ok .chip-val { color:var(--ok); }
   .chip.nodata { opacity:.55; } .chip.nodata .chip-val { color:var(--mut); }
-  .sec-label { font-size:10px; color:var(--mut); text-transform:uppercase; letter-spacing:.5px; margin:12px 0 6px; }
+  .sec-label { font-size:10px; color:var(--mut); text-transform:uppercase; letter-spacing:.5px;
+               margin:12px 0 6px; display:flex; align-items:baseline; justify-content:space-between; gap:8px; }
+  /* When the container sample was taken. The metric above it comes from
+     CloudMonitor and describes a different (slightly older) moment, so showing
+     them side by side without this invites "why is CPU 81% and every container 0%". */
+  .sec-when { text-transform:none; letter-spacing:0; font-variant-numeric:tabular-nums;
+              white-space:nowrap; opacity:.75; font-weight:400; }
+  .sec-when.stale { color:var(--warn); opacity:1; }
   .services { display:flex; gap:6px; flex-wrap:wrap; }
   .svc { display:inline-flex; align-items:center; gap:6px; font-size:12px; padding:4px 9px;
          border:1px solid var(--line); border-radius:999px; color:var(--txt); }
+  /* Instance specification line: the denominator for every percentage above. */
+  .spec { display:flex; flex-wrap:wrap; gap:10px; margin:2px 0 8px; font-size:11.5px; color:var(--mut); }
+  .spec b { color:var(--txt); font-weight:600; }
+  .spec .prov-stopped { color:var(--bad); font-weight:600; }
+  /* Docker workloads reported by the host itself. */
+  .ctrs { display:flex; flex-direction:column; gap:3px; }
+  .ctr { display:flex; align-items:center; gap:7px; font-size:11.5px; line-height:1.5; }
+  .ctr .dot { width:7px; height:7px; border-radius:50%; flex:0 0 auto; background:var(--mut); }
+  .ctr.healthy .dot, .ctr.running .dot { background:var(--ok); }
+  .ctr.unhealthy .dot, .ctr.stopped .dot { background:var(--bad); }
+  .ctr.restarting .dot, .ctr.starting .dot, .ctr.paused .dot, .ctr.created .dot { background:#d9a520; }
+  .ctr-name { font-weight:600; color:var(--txt); }
+  .ctr-img { color:var(--mut); overflow:hidden; text-overflow:ellipsis; white-space:nowrap; max-width:150px; }
+  .ctr-state { margin-left:auto; color:var(--mut); white-space:nowrap; }
+  .ctr.unhealthy .ctr-state, .ctr.stopped .ctr-state { color:var(--bad); }
+  .ctr.restarting .ctr-state { color:#d9a520; }
+  .ctrs-note { font-size:11px; color:var(--mut); font-style:italic; }
+  /* Triage band - what is wrong and where to look, above the cards. Hidden
+     entirely when nothing is wrong, so its presence is itself the signal. */
+  #attention { background:var(--card); border:1px solid var(--bad);
+               border-left:4px solid var(--bad); border-radius:12px;
+               padding:14px 16px; margin-bottom:18px; }
+  #attention h2 { font-size:14px; margin:0 0 4px; color:var(--bad); }
+  .att-row { padding:9px 0; border-top:1px solid var(--line); }
+  .att-row:first-of-type { border-top:0; }
+  .att-what { font-size:13.5px; }
+  .att-why { font-size:12px; color:var(--mut); margin-top:2px; }
+  .att-next { font-size:12px; margin-top:5px; padding:6px 9px; border-radius:3px;
+              background:rgba(59,130,246,.10); border-left:2px solid var(--accent); }
+  .att-row.sev0 .att-what { color:var(--bad); font-weight:700; }
+  .att-detail { margin-top:6px; }
+  .att-detail summary { cursor:pointer; font-size:12px; color:var(--accent); outline:none; }
+  .att-detail summary::marker { color:var(--mut); }
+  .att-cause { font-size:12.5px; line-height:1.55; margin:7px 0 0; padding:8px 10px;
+               background:rgba(255,255,255,.03); border-left:2px solid var(--warn);
+               border-radius:3px; }
+  .att-steps { margin:8px 0 2px; padding-left:20px; }
+  .att-steps li { margin:7px 0; font-size:12px; }
+  .step-what { color:var(--mut); margin-bottom:3px; }
+  .att-steps code { display:block; background:#0b0f14; border:1px solid var(--line);
+                    border-radius:4px; padding:6px 8px; font-size:11.5px;
+                    white-space:pre-wrap; word-break:break-all; color:#9ecbff; }
+  /* Per-service usage. Tabular numerals so the column stays readable as values change. */
+  .ctr-usage { margin-left:auto; color:var(--mut); font-size:11px; white-space:nowrap;
+               font-variant-numeric:tabular-nums; }
+  .ctr-usage i { font-style:normal; opacity:.55; margin:0 7px 0 1px; }
+  .ctr-state { margin-left:8px; color:var(--mut); white-space:nowrap; }
+  .ctr.hot .ctr-usage { color:var(--warn); font-weight:700; }
   .svc .dot { width:8px; height:8px; border-radius:50%; background:var(--mut); }
   .svc.up .dot { background:var(--ok); } .svc.down .dot { background:var(--bad); }
   .svc.down { border-color:var(--bad); color:var(--bad); }
@@ -65,6 +120,47 @@
   #toast.show { opacity:1; }
   .muted { color:var(--mut); font-size:12px; }
   iframe.preview { width:100%; height:360px; border:1px solid var(--line); border-radius:8px; background:#fff; margin-top:10px; }
+  /* --- History charts -------------------------------------------------- */
+  .hist-btn { background:transparent; border:1px solid var(--line); color:var(--mut);
+              font-size:11px; font-weight:600; padding:3px 9px; border-radius:999px; }
+  .hist-btn:hover { color:var(--txt); border-color:var(--accent); }
+  .modal { position:fixed; inset:0; background:rgba(0,0,0,.6); z-index:50;
+           display:flex; align-items:flex-start; justify-content:center; padding:28px 16px; overflow:auto; }
+  .modal-box { background:var(--card); border:1px solid var(--line); border-radius:12px;
+               padding:18px 20px; width:100%; max-width:900px; }
+  .modal-head { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; }
+  .modal-title { font-size:16px; font-weight:700; }
+  .modal-sub { font-size:11.5px; color:var(--mut); margin-top:3px; font-family:ui-monospace,Menlo,monospace; }
+  .ranges { display:flex; gap:6px; flex-wrap:wrap; margin:14px 0 0; }
+  .ranges button { background:transparent; border:1px solid var(--line); color:var(--mut);
+                   font-size:12px; padding:5px 12px; border-radius:999px; font-weight:600; }
+  .ranges button.on { background:rgba(59,130,246,.15); border-color:var(--accent); color:var(--txt); }
+  .custom-range { display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end; margin-top:10px;
+                  padding:10px 12px; border:1px solid var(--line); border-radius:8px; }
+  .custom-range label { font-size:11px; color:var(--mut); display:flex; flex-direction:column; gap:4px; }
+  .custom-range input { background:var(--bg); border:1px solid var(--line); color:var(--txt);
+                        border-radius:6px; padding:6px 8px; font-size:12.5px; font-family:inherit; }
+  .custom-range button { padding:7px 14px; font-size:12.5px; }
+  .chart-wrap { margin-top:16px; position:relative; }
+  .chart-head { display:flex; justify-content:space-between; align-items:baseline; gap:10px; margin-bottom:2px; }
+  .chart-label { font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; }
+  .chart-meta { font-size:11px; color:var(--mut); font-variant-numeric:tabular-nums; }
+  .chart-meta .over { color:var(--bad); font-weight:700; }
+  .chart-meta .gap { color:var(--warn); }
+  svg.chart { display:block; width:100%; cursor:crosshair; }
+  svg.chart .grid { stroke:var(--line); stroke-width:1; }
+  svg.chart .axis { fill:var(--mut); font-size:9.5px; font-family:inherit; }
+  svg.chart .line { fill:none; stroke:var(--accent); stroke-width:1.8;
+                    stroke-linejoin:round; stroke-linecap:round; }
+  svg.chart .thr { stroke:var(--bad); stroke-width:1; stroke-dasharray:4 4; opacity:.8; }
+  svg.chart .thrtxt { fill:var(--bad); font-size:9.5px; opacity:.9; }
+  svg.chart .over { fill:var(--bad); }
+  svg.chart .cursor { stroke:var(--mut); stroke-width:1; stroke-dasharray:3 3; opacity:0; }
+  svg.chart .cdot { fill:var(--txt); opacity:0; }
+  .chart-tip { position:absolute; pointer-events:none; background:var(--bg); border:1px solid var(--line);
+               border-radius:6px; padding:5px 8px; font-size:11.5px; white-space:nowrap;
+               font-variant-numeric:tabular-nums; opacity:0; transition:opacity .08s; z-index:2; }
+  .chart-empty { font-size:12px; color:var(--mut); font-style:italic; padding:14px 0; }
 </style>
 </head>
 <body>
@@ -90,6 +186,8 @@
     <span class="pill" id="svcPill">services: -</span>
   </div>
 
+  <div id="attention" style="display:none"></div>
+
   <div id="cards"><div class="muted">Loading...</div></div>
 
   <div class="panel" id="evidencePanel" style="display:none">
@@ -112,6 +210,25 @@
       <thead><tr><th>Time (UTC)</th><th>Mode</th><th>Breaches</th><th>Metrics</th></tr></thead>
       <tbody id="histBody"><tr><td colspan="4" class="muted">-</td></tr></tbody>
     </table>
+  </div>
+</div>
+
+<div id="chartModal" class="modal" style="display:none">
+  <div class="modal-box">
+    <div class="modal-head">
+      <div>
+        <div class="modal-title" id="chTitle">-</div>
+        <div class="modal-sub" id="chSub">-</div>
+      </div>
+      <button class="ghost" id="chClose">Close</button>
+    </div>
+    <div class="ranges" id="chRanges"></div>
+    <div class="custom-range" id="chCustom" style="display:none">
+      <label>From<input type="datetime-local" id="chFrom"></label>
+      <label>To<input type="datetime-local" id="chTo"></label>
+      <button id="chApply">Apply</button>
+    </div>
+    <div id="chBody"><div class="chart-empty">Loading&hellip;</div></div>
   </div>
 </div>
 
@@ -152,8 +269,175 @@ function svcPill(s){
   return `<span class="svc ${cls}" title="${esc(title)}"><span class="dot"></span>${esc(s.name)} ${lat}</span>`;
 }
 
-function renderCards(scan){
+let lastDetails = {};   // instance specs + containers from /api/status
+
+function specLine(spec){
+  // The instance's size, so a percentage can be read as an absolute. "95% of
+  // 4 GB" is a different conversation from "95% of 64 GB".
+  if(!spec) return '';
+  const bits = [];
+  if(spec.vcpu!=null)      bits.push(`<span><b>${spec.vcpu}</b> vCPU</span>`);
+  if(spec.memory_mb!=null) bits.push(`<span><b>${fmtMem(spec.memory_mb)}</b> RAM</span>`);
+  if(spec.disk_gb!=null)   bits.push(`<span><b>${fmtDisk(spec.disk_gb)}</b> disk</span>`);
+  if(spec.instance_type)   bits.push(`<span>${esc(spec.instance_type)}</span>`);
+  if(spec.platform)        bits.push(`<span title="${esc(spec.platform)}">${esc(trunc(spec.platform, 26))}</span>`);
+  if(spec.provider_status && spec.provider_status!=='Running'){
+    bits.push(`<span class="prov-stopped">${esc(spec.provider_status)}</span>`);
+  }
+  return bits.length ? `<div class="spec">${bits.join('')}</div>` : '';
+}
+
+function fmtMem(mb){
+  return mb >= 1024 ? (mb/1024).toFixed(mb%1024 ? 1 : 0) + ' GB' : mb + ' MB';
+}
+
+function fmtDisk(gb){
+  // Summed across every attached disk, so this reaches TB on data-heavy boxes.
+  return gb >= 1024 ? (gb/1024).toFixed(1) + ' TB' : gb + ' GB';
+}
+
+function trunc(t, n){ return t.length > n ? t.slice(0, n-1) + '…' : t; }
+
+function ctrNum(v){ return v==null ? '–' : v.toFixed(v < 10 ? 1 : 0); }
+
+function ctrRow(c, hottest){
+  // Name + usage + state. The image moves into the tooltip: when a host spikes
+  // you are looking for which service is heavy, not which tag it was built from.
+  const h = c.health || 'unknown';
+  const hot = (hottest && c.name === hottest) ? ' hot' : '';
+  const title = [c.image, c.status, c.mem_usage, c.ports].filter(Boolean).join(' · ');
+  return `<div class="ctr ${esc(h)}${hot}" title="${esc(title)}">
+    <span class="dot"></span>
+    <span class="ctr-name">${esc(c.name)}</span>
+    <span class="ctr-usage">${ctrNum(c.cpu_pct)}%<i>cpu</i> ${ctrNum(c.mem_pct)}%<i>mem</i></span>
+    <span class="ctr-state">${esc(h)}</span>
+  </div>`;
+}
+
+// Clock time of an ISO stamp, for "when was this sampled" rather than "how long ago".
+function hhmmss(iso){
+  if(!iso) return '';
+  const d = new Date(iso);
+  return isNaN(d) ? '' : d.toTimeString().slice(0,8);
+}
+
+// The container panel and the metric chips above it are NOT simultaneous:
+// metrics come from CloudMonitor (an average over the agent's window), container
+// usage from a `docker stats` sample taken later in the same cycle over SSH. A
+// short spike can land in one and miss the other, which looks like a bug unless
+// the page says when each was taken.
+function sampledAt(det){
+  const iso = det && det.containers_updated_at;
+  if(!iso) return '';
+  const age = (Date.now() - new Date(iso).getTime()) / 1000;
+  const stale = !(age < 600);          // NaN-safe: an unparseable stamp reads stale
+  const title = 'docker stats sampled at ' + iso +
+                ' - the metrics above come from CloudMonitor and describe a slightly ' +
+                'different moment, so a brief spike can appear in one and not the other';
+  return `<span class="sec-when${stale?' stale':''}" title="${esc(title)}">usage @ ${esc(hhmmss(iso))}</span>`;
+}
+
+function containersBlock(det){
+  // A managed instance (RDS) has no shell and never reports containers - its
+  // engine + status live on the spec line instead, so say nothing here.
+  if(!det) return '';
+  const list = det.containers || [];
+  // A collection problem is worth showing even when some rows arrived - e.g.
+  // `docker ps` succeeded but `docker stats` timed out, so usage is missing.
+  const note = det.containers_error
+    ? `<div class="ctrs-note">${esc(det.containers_error)}</div>` : '';
+  if(!list.length) return note ? `<div class="sec-label"><span>Docker services</span></div>${note}` : '';
+  const bad = det.containers_attention || 0;
+  const hottest = (list.filter(c=>c.cpu_pct!=null)
+                       .sort((a,b)=>b.cpu_pct-a.cpu_pct)[0]||{}).name;
+  const label = bad
+    ? `Docker services &mdash; <span style="color:var(--bad)">${bad} need${bad===1?'s':''} attention</span>`
+    : `Docker services &mdash; ${list.length} running`;
+  return `<div class="sec-label"><span>${label}</span>${sampledAt(det)}</div>${note}<div class="ctrs">${list.map(c=>ctrRow(c, hottest)).join('')}</div>`;
+}
+
+let lastGuidance = {};   // root cause + steps, served by /api/status
+
+// Which guidance entry applies, and - where the evidence can tell us - which
+// variant of it. "Connection refused" and "timed out" are opposite diagnoses,
+// so the band says which one rather than offering both.
+function serviceVariant(why){
+  const t = (why || '').toLowerCase();
+  if(t.includes('refused')) return 'refused';
+  if(t.includes('timed out') || t.includes('timeout')) return 'timeout';
+  if(t.includes('unexpected status')) return 'status';
+  return null;
+}
+
+function attentionItems(scan, details){
+  // One flat, ranked list of everything wrong right now, so triage does not mean
+  // scanning every card. Ordered by how much each explains the others: a stopped
+  // instance accounts for its own dead metrics, so it goes first.
+  const items = [];
+  Object.entries(details||{}).forEach(([id, det])=>{
+    const ps = det.spec && det.spec.provider_status;
+    if(ps && ps !== 'Running'){
+      items.push({sev:0, kind:'stopped', inst:det.name || id,
+                  what:`Instance is ${ps}`, why:'Reported by the provider, not by a probe'});
+    }
+  });
+  (scan.results||[]).filter(r=>r.breached).forEach(r=>{
+    const det = (details||{})[r.instance_id] || {};
+    const hot = (det.containers||[]).filter(c=>c.cpu_pct!=null)
+      .sort((a,b)=> (r.label==='Memory' ? b.mem_pct-a.mem_pct : b.cpu_pct-a.cpu_pct))[0];
+    const culprit = hot
+      ? `Heaviest service on this host: ${hot.name} (${ctrNum(hot.cpu_pct)}% cpu, ${ctrNum(hot.mem_pct)}% mem${hot.mem_usage ? ', ' + hot.mem_usage : ''})`
+      : 'No per-container figures for this host - diagnostics may not be set up on it';
+    items.push({sev:1, kind:r.label, inst:r.instance_name,
+                what:`${r.label} ${r.value}${r.unit||''} is over the ${r.comparison} ${r.threshold}${r.unit||''} limit`,
+                why:culprit});
+  });
+  (scan.services_down||[]).forEach(sv=>{
+    const why = `${sv.target||''} - ${sv.error||sv.detail||'no detail'}`.trim();
+    items.push({sev:2, kind:'service', variant:serviceVariant(why),
+                inst:sv.instance_name, what:`${sv.name} is unreachable`, why:why});
+  });
+  Object.entries(details||{}).forEach(([id, det])=>{
+    (det.containers||[]).filter(c=>['unhealthy','stopped','restarting'].includes(c.health)).forEach(c=>{
+      items.push({sev:3, kind:'container', inst:det.name || id, ctr:c.name,
+                  what:`${c.name} is ${c.health}`, why:c.status || ''});
+    });
+  });
+  return items.sort((a,b)=>a.sev-b.sev);
+}
+
+function guidanceBlock(item){
+  const g = lastGuidance[item.kind];
+  if(!g) return '';
+  // A variant replaces the generic cause when the evidence identified one.
+  const cause = (item.variant && g.variants && g.variants[item.variant]) || g.cause;
+  const steps = (g.steps||[]).map((st,i)=>`<li>
+      <div class="step-what">${esc(st.what)}</div>
+      <code>${esc((st.cmd||'').replace(/<name>/g, item.ctr || '<name>'))}</code>
+    </li>`).join('');
+  return `<details class="att-detail">
+    <summary>Root cause &amp; how to fix</summary>
+    <div class="att-cause">${esc(cause)}</div>
+    ${steps ? `<ol class="att-steps">${steps}</ol>` : ''}
+  </details>`;
+}
+
+function renderAttention(scan, details){
+  const el = $('#attention');
+  const items = scan ? attentionItems(scan, details) : [];
+  if(!items.length){ el.style.display='none'; el.innerHTML=''; return; }
+  const rows = items.map(it=>`<div class="att-row sev${it.sev}">
+      <div class="att-what"><b>${esc(it.inst)}</b> &mdash; ${esc(it.what)}</div>
+      <div class="att-why">${esc(it.why)}</div>
+      ${guidanceBlock(it)}
+    </div>`).join('');
+  el.style.display='';
+  el.innerHTML = `<h2>Needs attention &mdash; ${items.length} item${items.length!==1?'s':''}</h2>${rows}`;
+}
+
+function renderCards(scan, details){
   const c = $('#cards');
+  details = details || {};
   if(!scan){ c.innerHTML='<div class="muted">No scan yet.</div>'; return; }
 
   const svcByInst = {};
@@ -168,15 +452,29 @@ function renderCards(scan){
 
   c.innerHTML = Object.entries(groups).map(([gname, insts])=>{
     const instCount = Object.keys(insts).length;
-    let gBreaches=0, gDown=0;
+    let gBreaches=0, gDown=0, gCtr=0;
     Object.values(insts).forEach(i=>{ gBreaches+=i.metrics.filter(m=>m.breached).length;
-      gDown += (svcByInst[i.id]||[]).filter(s=>s.up===false).length; });
-    const cards = Object.values(insts).map(inst=>{
+      gDown += (svcByInst[i.id]||[]).filter(s=>s.up===false).length;
+      gCtr += (details[i.id] && details[i.id].containers_attention) || 0; });
+    // Work out what is wrong BEFORE rendering, so the instances that need a human
+    // sort to the front of the group instead of sitting wherever the scan put them.
+    const prepared = Object.values(insts).map(inst=>{
       const svcs = svcByInst[inst.id]||[];
+      const det = details[inst.id];
       const anyDown = svcs.some(s=>s.up===false);
-      const problem = inst.metrics.some(m=>m.breached) || anyDown;
+      // A container docker calls unhealthy, or one in a restart loop, is a real
+      // problem even when every metric is green and the port still answers.
+      const ctrProblem = ((det && det.containers_attention) || 0) > 0;
+      const stopped = !!(det && det.spec && det.spec.provider_status
+                         && det.spec.provider_status !== 'Running');
+      const problem = inst.metrics.some(m=>m.breached) || anyDown || ctrProblem || stopped;
+      return {inst, svcs, det, problem};
+    });
+    prepared.sort((a,b)=> (b.problem?1:0)-(a.problem?1:0)
+                          || a.inst.name.localeCompare(b.inst.name));
+    const cards = prepared.map(({inst, svcs, det, problem})=>{
       const svcBlock = svcs.length
-        ? `<div class="sec-label">Services</div><div class="services">${svcs.map(svcPill).join('')}</div>`
+        ? `<div class="sec-label"><span>Reachability</span></div><div class="services">${svcs.map(svcPill).join('')}</div>`
         : '';
       return `<div class="card ${problem?'breach':''}">
         <div class="inst-head">
@@ -184,17 +482,23 @@ function renderCards(scan){
             <div class="inst-name">${esc(inst.name)}</div>
             <div class="inst-id">${esc(inst.id)}</div>
           </div>
-          ${problem?'<span class="status-tag breach">ATTENTION</span>'
-                   :'<span class="status-tag ok">OK</span>'}
+          <div style="display:flex;align-items:center;gap:8px">
+            ${inst.id?`<button class="hist-btn" data-hist="${esc(inst.id)}" data-name="${esc(inst.name)}">History</button>`:''}
+            ${problem?'<span class="status-tag breach">ATTENTION</span>'
+                     :'<span class="status-tag ok">OK</span>'}
+          </div>
         </div>
+        ${specLine(det && det.spec)}
         <div class="chips">${inst.metrics.map(metricChip).join('')}</div>
         ${svcBlock}
+        ${containersBlock(det)}
       </div>`;
     }).join('');
     const summ = [`${instCount} instance${instCount!==1?'s':''}`];
     if(gBreaches) summ.push(`<span style="color:var(--bad)">${gBreaches} breach</span>`);
     if(gDown) summ.push(`<span style="color:var(--bad)">${gDown} svc down</span>`);
-    if(!gBreaches && !gDown) summ.push('all ok');
+    if(gCtr) summ.push(`<span style="color:var(--bad)">${gCtr} container${gCtr!==1?'s':''} need${gCtr===1?'s':''} attention</span>`);
+    if(!gBreaches && !gDown && !gCtr) summ.push('all ok');
     return `<section class="group">
       <div class="group-head">
         <h2>${esc(gname)}</h2>
@@ -264,6 +568,278 @@ function renderHist(h){
     <td>${x.total}</td></tr>`).join('');
 }
 
+
+/* ===========================================================================
+   History charts
+   A card answers "is it bad now". These answer "was it bad, when, and for how
+   long" - the question you cannot ask of a single instant, and the one that
+   turns "CPU was 81% but every container reads 0%" from a mystery into a
+   one-cycle spike you can see the shape of.
+   Drawn as inline SVG on purpose: no charting library, so nothing is fetched
+   from a CDN this network may not reach, and the page keeps its single-file
+   deploy story.
+   =========================================================================== */
+const CH_RANGES = [
+  {k:'1h',  label:'1 hour',  hours:1},
+  {k:'6h',  label:'6 hours', hours:6},
+  {k:'24h', label:'1 day',   hours:24},
+  {k:'7d',  label:'7 days',  hours:168},
+  {k:'30d', label:'30 days', hours:720},
+  {k:'custom', label:'Custom', hours:null},
+];
+let CH = {id:null, name:'', range:'1h', from:null, to:null, data:null, busy:false};
+
+function chOpen(id, name){
+  CH.id = id; CH.name = name || id; CH.range = '1h'; CH.from = null; CH.to = null; CH.data = null;
+  $('#chTitle').textContent = CH.name;
+  $('#chSub').textContent = id;
+  $('#chCustom').style.display = 'none';
+  $('#chBody').innerHTML = '<div class="chart-empty">Loading&hellip;</div>';
+  chRenderRanges();
+  $('#chartModal').style.display = 'flex';
+  chLoad();
+}
+function chClose(){ $('#chartModal').style.display = 'none'; CH.id = null; }
+
+function chRenderRanges(){
+  $('#chRanges').innerHTML = CH_RANGES.map(r =>
+    `<button data-range="${r.k}" class="${CH.range===r.k?'on':''}">${esc(r.label)}</button>`).join('');
+}
+
+// <input type="datetime-local"> speaks local wall-clock with no zone, so round-trip
+// through Date to get the absolute instant the API expects.
+function chLocalInput(d){
+  const pad = n => String(n).padStart(2,'0');
+  return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+
+         'T'+pad(d.getHours())+':'+pad(d.getMinutes());
+}
+
+function chPickRange(key){
+  CH.range = key;
+  chRenderRanges();
+  if(key === 'custom'){
+    const to = CH.data ? new Date(CH.data.to) : new Date();
+    const from = CH.data ? new Date(CH.data.from) : new Date(Date.now() - 3600e3);
+    $('#chFrom').value = chLocalInput(from);
+    $('#chTo').value = chLocalInput(to);
+    $('#chCustom').style.display = 'flex';
+    return;                      // wait for Apply; do not refetch yet
+  }
+  $('#chCustom').style.display = 'none';
+  CH.from = CH.to = null;
+  chLoad();
+}
+
+function chApplyCustom(){
+  const f = new Date($('#chFrom').value), t = new Date($('#chTo').value);
+  if(isNaN(f) || isNaN(t)){ toast('Pick both a start and an end'); return; }
+  if(f >= t){ toast('Start must be before end'); return; }
+  CH.from = f.toISOString(); CH.to = t.toISOString();
+  chLoad();
+}
+
+async function chLoad(){
+  if(!CH.id || CH.busy) return;
+  CH.busy = true;
+  const id = CH.id;
+  try{
+    const q = new URLSearchParams({instance_id:id, points:'240'});
+    if(CH.from && CH.to){ q.set('from', CH.from); q.set('to', CH.to); }
+    else { q.set('hours', String((CH_RANGES.find(r=>r.k===CH.range)||{hours:1}).hours || 1)); }
+    const r = await api('/api/metrics/history?' + q.toString());
+    if(authGuard(r)) return;
+    if(!r.ok){ $('#chBody').innerHTML = '<div class="chart-empty">Could not load history.</div>'; return; }
+    const d = await r.json();
+    if(CH.id !== id) return;     // the modal moved on while this was in flight
+    CH.data = d;
+    chDraw();
+  }catch(e){
+    $('#chBody').innerHTML = '<div class="chart-empty">Could not load history.</div>';
+  }finally{ CH.busy = false; }
+}
+
+function chGeom(w){
+  const padL=42, padR=12, padT=10, padB=20, H=150;
+  return {w:w, H:H, padL:padL, padR:padR, padT:padT, padB:padB,
+          plotW:Math.max(w-padL-padR, 20), plotH:H-padT-padB};
+}
+
+function chScale(s){
+  // Percentages share one 0-100 frame so CPU, memory and disk are comparable at a
+  // glance and a threshold at 80 sits in the same place on each.
+  if((s.unit||'') === '%') return {lo:0, hi:100};
+  const vals = s.points.map(p=>p.v).filter(v=>v!=null);
+  if(s.threshold!=null) vals.push(s.threshold);
+  if(!vals.length) return {lo:0, hi:1};
+  let lo = Math.min.apply(null, vals), hi = Math.max.apply(null, vals);
+  if(hi === lo) hi = lo + 1;
+  const pad = (hi-lo)*0.1;
+  return {lo:lo-pad, hi:hi+pad};
+}
+
+function chFmtTime(iso, spanHours){
+  const d = new Date(iso);
+  const pad = n => String(n).padStart(2,'0');
+  const hm = pad(d.getHours())+':'+pad(d.getMinutes());
+  return spanHours > 48 ? (pad(d.getMonth()+1)+'/'+pad(d.getDate())+' '+hm) : hm;
+}
+
+function chIsOver(s, v){
+  if(v==null || s.threshold==null) return false;
+  return (s.comparison||'>').indexOf('<')===0 ? v < s.threshold : v > s.threshold;
+}
+
+function chSvg(s, i, g, spanHours){
+  const n = s.points.length;
+  const sc = chScale(s);
+  const X = k => g.padL + (n<=1 ? g.plotW/2 : (k/(n-1))*g.plotW);
+  const Y = v => g.padT + (1 - (v - sc.lo)/(sc.hi - sc.lo)) * g.plotH;
+
+  let d = '', pen = false;
+  for(let k=0;k<n;k++){
+    const v = s.points[k].v;
+    if(v==null){ pen = false; continue; }
+    d += (pen?'L':'M') + X(k).toFixed(1) + ' ' + Y(v).toFixed(1) + ' ';
+    pen = true;
+  }
+
+  const grid = [sc.hi, (sc.hi+sc.lo)/2, sc.lo].map(v =>
+    `<line class="grid" x1="${g.padL}" y1="${Y(v).toFixed(1)}" x2="${(g.padL+g.plotW).toFixed(1)}" y2="${Y(v).toFixed(1)}"/>`+
+    `<text class="axis" x="${g.padL-6}" y="${(Y(v)+3).toFixed(1)}" text-anchor="end">${v.toFixed(0)}</text>`
+  ).join('');
+
+  let thr = '';
+  if(s.threshold!=null && s.threshold>=sc.lo && s.threshold<=sc.hi){
+    const ty = Y(s.threshold).toFixed(1);
+    thr = `<line class="thr" x1="${g.padL}" y1="${ty}" x2="${(g.padL+g.plotW).toFixed(1)}" y2="${ty}"/>`+
+          `<text class="thrtxt" x="${(g.padL+g.plotW-2).toFixed(1)}" y="${(Y(s.threshold)-3).toFixed(1)}" text-anchor="end">alert ${esc(s.comparison||'>')}${s.threshold}</text>`;
+  }
+
+  const dots = s.points.map((p,k)=> chIsOver(s,p.v)
+    ? `<circle class="over" cx="${X(k).toFixed(1)}" cy="${Y(p.v).toFixed(1)}" r="2.4"/>` : '').join('');
+
+  const tickIdx = (n>1 ? [0, Math.floor((n-1)/3), Math.floor(2*(n-1)/3), n-1] : [0]);
+  const ticks = tickIdx.filter((v,idx,arr)=>arr.indexOf(v)===idx)
+    .map(k=>`<text class="axis" x="${X(k).toFixed(1)}" y="${g.H-6}" text-anchor="${k===0?'start':(k===n-1?'end':'middle')}">${esc(chFmtTime(s.points[k].t, spanHours))}</text>`)
+    .join('');
+
+  return `<svg class="chart" data-i="${i}" width="${g.w}" height="${g.H}" viewBox="0 0 ${g.w} ${g.H}">
+    ${grid}${thr}
+    <path class="line" d="${d.trim()}"/>
+    ${dots}
+    <line class="cursor" x1="0" y1="${g.padT}" x2="0" y2="${g.padT+g.plotH}"/>
+    <circle class="cdot" cx="0" cy="0" r="3"/>
+    ${ticks}
+    <rect x="${g.padL}" y="${g.padT}" width="${g.plotW}" height="${g.plotH}" fill="transparent"/>
+  </svg>`;
+}
+
+function chDraw(){
+  const d = CH.data;
+  const body = $('#chBody');
+  if(!d || !d.series || !d.series.length){
+    body.innerHTML = '<div class="chart-empty">No metrics recorded for this instance in that range.</div>';
+    return;
+  }
+  const w = Math.max(body.clientWidth || 820, 320);
+  const g = chGeom(w);
+  const spanHours = (new Date(d.to) - new Date(d.from)) / 3600e3;
+  const bucketMin = Math.round((d.bucket_seconds||300)/60);
+
+  const blocks = d.series.map((s,i)=>{
+    const vals = s.points.map(p=>p.v).filter(v=>v!=null);
+    const gaps = s.points.filter(p=>p.v==null).length;
+    const over = s.points.filter(p=>chIsOver(s,p.v)).length;
+    if(!vals.length){
+      return `<div class="chart-wrap"><div class="chart-head">
+        <span class="chart-label">${esc(s.label)}</span></div>
+        <div class="chart-empty">No data in this range &mdash; the metric was not reporting.</div></div>`;
+    }
+    const peak = (s.aggregate==='min' ? Math.min.apply(null,vals) : Math.max.apply(null,vals));
+    const meta = [
+      `${s.aggregate==='min'?'low':'peak'} ${peak.toFixed(1)}${esc(s.unit||'')}`,
+      s.threshold!=null ? `alert ${esc(s.comparison||'>')}${s.threshold}${esc(s.unit||'')}` : '',
+      over ? `<span class="over">${over} over</span>` : '',
+      gaps ? `<span class="gap">${gaps} no-data</span>` : ''
+    ].filter(Boolean).join(' &middot; ');
+    return `<div class="chart-wrap">
+      <div class="chart-head">
+        <span class="chart-label">${esc(s.label)}</span>
+        <span class="chart-meta">${meta}</span>
+      </div>
+      ${chSvg(s, i, g, spanHours)}
+      <div class="chart-tip"></div>
+    </div>`;
+  }).join('');
+
+  const aggWord = (d.series[0] && d.series[0].aggregate === 'min') ? 'lowest' : 'highest';
+  body.innerHTML = blocks + `<div class="chart-empty" style="padding-top:12px">
+      Each point is the ${aggWord} value in a ${bucketMin}-minute bucket, not the
+      average &mdash; averaging hides the short spikes worth finding. Breaks in a
+      line are cycles with no datapoint. Scans run every ${d.interval_minutes} min;
+      history is kept ${d.retention_days} days.
+    </div>`;
+
+  chAttachHover(g, spanHours);
+}
+
+function chAttachHover(g, spanHours){
+  const d = CH.data;
+  document.querySelectorAll('#chBody svg.chart').forEach(svg=>{
+    const s = d.series[parseInt(svg.dataset.i, 10)];
+    if(!s) return;
+    const wrap = svg.parentElement;
+    const tip = wrap.querySelector('.chart-tip');
+    const cur = svg.querySelector('.cursor');
+    const dot = svg.querySelector('.cdot');
+    const n = s.points.length;
+    const sc = chScale(s);
+    const X = k => g.padL + (n<=1 ? g.plotW/2 : (k/(n-1))*g.plotW);
+    const Y = v => g.padT + (1 - (v - sc.lo)/(sc.hi - sc.lo)) * g.plotH;
+    const hide = function(){ cur.style.opacity=0; dot.style.opacity=0; tip.style.opacity=0; };
+    svg.addEventListener('mouseleave', hide);
+    svg.addEventListener('mousemove', function(ev){
+      const r = svg.getBoundingClientRect();
+      // The SVG is laid out at 100% width, so map screen px back into user units.
+      const px = (ev.clientX - r.left) * (g.w / Math.max(r.width,1));
+      let k = n<=1 ? 0 : Math.round((px - g.padL) / g.plotW * (n-1));
+      k = Math.min(Math.max(k, 0), n-1);
+      const p = s.points[k];
+      const x = X(k);
+      cur.setAttribute('x1', x); cur.setAttribute('x2', x); cur.style.opacity = .7;
+      if(p.v==null){ dot.style.opacity = 0; }
+      else { dot.setAttribute('cx', x); dot.setAttribute('cy', Y(p.v)); dot.style.opacity = 1; }
+      const when = new Date(p.t).toLocaleString();
+      const shown = (p.v==null) ? 'no data' : (p.v + (s.unit||''));
+      tip.innerHTML = `<b>${esc(shown)}</b> &middot; ${esc(when)}`;
+      tip.style.opacity = 1;
+      const left = Math.min(Math.max((x / g.w) * r.width - 60, 0), Math.max(r.width - 150, 0));
+      tip.style.left = left + 'px';
+      tip.style.top = '18px';
+    });
+  });
+}
+
+let chResizeTimer = null;
+window.addEventListener('resize', function(){
+  if($('#chartModal').style.display === 'none' || !CH.data) return;
+  clearTimeout(chResizeTimer);
+  chResizeTimer = setTimeout(chDraw, 150);   // SVG px mapping is width-dependent
+});
+
+$('#cards').addEventListener('click', function(ev){
+  const b = ev.target.closest('button[data-hist]');
+  if(b) chOpen(b.dataset.hist, b.dataset.name);
+});
+$('#chRanges').addEventListener('click', function(ev){
+  const b = ev.target.closest('button[data-range]');
+  if(b) chPickRange(b.dataset.range);
+});
+$('#chClose').addEventListener('click', chClose);
+$('#chApply').addEventListener('click', chApplyCustom);
+$('#chartModal').addEventListener('click', function(ev){ if(ev.target.id==='chartModal') chClose(); });
+document.addEventListener('keydown', function(ev){ if(ev.key==='Escape') chClose(); });
+
 function authGuard(r){ if(r.status===401){ window.location='login.html'; return true; } return false; }
 
 async function refresh(){
@@ -271,14 +847,16 @@ async function refresh(){
   if(!CSRF) await loadCsrf();
   const s = await r.json();
   applyConfig(s.config);
-  renderCards(s.last_scan); renderAlert(s.last_alert); renderHist(s.history);
+  lastDetails = s.instances || lastDetails;
+  lastGuidance = s.guidance || lastGuidance;
+  renderCards(s.last_scan, lastDetails); renderAttention(s.last_scan, lastDetails); renderAlert(s.last_alert); renderHist(s.history);
   renderEvidence(s.last_scan && s.last_scan.diagnostics);
 }
 async function scan(){
   $('#scanBtn').disabled=true;
   try{ const r=await api('/api/scan',{method:'POST',headers:postHeaders()}); if(authGuard(r)) return;
     const s=await r.json();
-    renderCards(s); toast(`Scan done - ${s.breach_count} breach(es), ${s.services_down_count||0} svc down`); await refresh(); }
+    renderCards(s, lastDetails); toast(`Scan done - ${s.breach_count} breach(es), ${s.services_down_count||0} svc down`); await refresh(); }
   finally{ $('#scanBtn').disabled=false; }
 }
 async function send(){
