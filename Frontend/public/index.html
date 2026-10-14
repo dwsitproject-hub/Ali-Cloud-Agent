@@ -43,7 +43,14 @@
   .chip.breach { border-color:var(--bad); } .chip.breach .chip-val { color:var(--bad); }
   .chip.ok .chip-val { color:var(--ok); }
   .chip.nodata { opacity:.55; } .chip.nodata .chip-val { color:var(--mut); }
-  .sec-label { font-size:10px; color:var(--mut); text-transform:uppercase; letter-spacing:.5px; margin:12px 0 6px; }
+  .sec-label { font-size:10px; color:var(--mut); text-transform:uppercase; letter-spacing:.5px;
+               margin:12px 0 6px; display:flex; align-items:baseline; justify-content:space-between; gap:8px; }
+  /* When the container sample was taken. The metric above it comes from
+     CloudMonitor and describes a different (slightly older) moment, so showing
+     them side by side without this invites "why is CPU 81% and every container 0%". */
+  .sec-when { text-transform:none; letter-spacing:0; font-variant-numeric:tabular-nums;
+              white-space:nowrap; opacity:.75; font-weight:400; }
+  .sec-when.stale { color:var(--warn); opacity:1; }
   .services { display:flex; gap:6px; flex-wrap:wrap; }
   .svc { display:inline-flex; align-items:center; gap:6px; font-size:12px; padding:4px 9px;
          border:1px solid var(--line); border-radius:999px; color:var(--txt); }
@@ -113,6 +120,47 @@
   #toast.show { opacity:1; }
   .muted { color:var(--mut); font-size:12px; }
   iframe.preview { width:100%; height:360px; border:1px solid var(--line); border-radius:8px; background:#fff; margin-top:10px; }
+  /* --- History charts -------------------------------------------------- */
+  .hist-btn { background:transparent; border:1px solid var(--line); color:var(--mut);
+              font-size:11px; font-weight:600; padding:3px 9px; border-radius:999px; }
+  .hist-btn:hover { color:var(--txt); border-color:var(--accent); }
+  .modal { position:fixed; inset:0; background:rgba(0,0,0,.6); z-index:50;
+           display:flex; align-items:flex-start; justify-content:center; padding:28px 16px; overflow:auto; }
+  .modal-box { background:var(--card); border:1px solid var(--line); border-radius:12px;
+               padding:18px 20px; width:100%; max-width:900px; }
+  .modal-head { display:flex; justify-content:space-between; align-items:flex-start; gap:12px; }
+  .modal-title { font-size:16px; font-weight:700; }
+  .modal-sub { font-size:11.5px; color:var(--mut); margin-top:3px; font-family:ui-monospace,Menlo,monospace; }
+  .ranges { display:flex; gap:6px; flex-wrap:wrap; margin:14px 0 0; }
+  .ranges button { background:transparent; border:1px solid var(--line); color:var(--mut);
+                   font-size:12px; padding:5px 12px; border-radius:999px; font-weight:600; }
+  .ranges button.on { background:rgba(59,130,246,.15); border-color:var(--accent); color:var(--txt); }
+  .custom-range { display:flex; gap:10px; flex-wrap:wrap; align-items:flex-end; margin-top:10px;
+                  padding:10px 12px; border:1px solid var(--line); border-radius:8px; }
+  .custom-range label { font-size:11px; color:var(--mut); display:flex; flex-direction:column; gap:4px; }
+  .custom-range input { background:var(--bg); border:1px solid var(--line); color:var(--txt);
+                        border-radius:6px; padding:6px 8px; font-size:12.5px; font-family:inherit; }
+  .custom-range button { padding:7px 14px; font-size:12.5px; }
+  .chart-wrap { margin-top:16px; position:relative; }
+  .chart-head { display:flex; justify-content:space-between; align-items:baseline; gap:10px; margin-bottom:2px; }
+  .chart-label { font-size:12px; font-weight:700; text-transform:uppercase; letter-spacing:.5px; }
+  .chart-meta { font-size:11px; color:var(--mut); font-variant-numeric:tabular-nums; }
+  .chart-meta .over { color:var(--bad); font-weight:700; }
+  .chart-meta .gap { color:var(--warn); }
+  svg.chart { display:block; width:100%; cursor:crosshair; }
+  svg.chart .grid { stroke:var(--line); stroke-width:1; }
+  svg.chart .axis { fill:var(--mut); font-size:9.5px; font-family:inherit; }
+  svg.chart .line { fill:none; stroke:var(--accent); stroke-width:1.8;
+                    stroke-linejoin:round; stroke-linecap:round; }
+  svg.chart .thr { stroke:var(--bad); stroke-width:1; stroke-dasharray:4 4; opacity:.8; }
+  svg.chart .thrtxt { fill:var(--bad); font-size:9.5px; opacity:.9; }
+  svg.chart .over { fill:var(--bad); }
+  svg.chart .cursor { stroke:var(--mut); stroke-width:1; stroke-dasharray:3 3; opacity:0; }
+  svg.chart .cdot { fill:var(--txt); opacity:0; }
+  .chart-tip { position:absolute; pointer-events:none; background:var(--bg); border:1px solid var(--line);
+               border-radius:6px; padding:5px 8px; font-size:11.5px; white-space:nowrap;
+               font-variant-numeric:tabular-nums; opacity:0; transition:opacity .08s; z-index:2; }
+  .chart-empty { font-size:12px; color:var(--mut); font-style:italic; padding:14px 0; }
 </style>
 </head>
 <body>
@@ -162,6 +210,25 @@
       <thead><tr><th>Time (UTC)</th><th>Mode</th><th>Breaches</th><th>Metrics</th></tr></thead>
       <tbody id="histBody"><tr><td colspan="4" class="muted">-</td></tr></tbody>
     </table>
+  </div>
+</div>
+
+<div id="chartModal" class="modal" style="display:none">
+  <div class="modal-box">
+    <div class="modal-head">
+      <div>
+        <div class="modal-title" id="chTitle">-</div>
+        <div class="modal-sub" id="chSub">-</div>
+      </div>
+      <button class="ghost" id="chClose">Close</button>
+    </div>
+    <div class="ranges" id="chRanges"></div>
+    <div class="custom-range" id="chCustom" style="display:none">
+      <label>From<input type="datetime-local" id="chFrom"></label>
+      <label>To<input type="datetime-local" id="chTo"></label>
+      <button id="chApply">Apply</button>
+    </div>
+    <div id="chBody"><div class="chart-empty">Loading&hellip;</div></div>
   </div>
 </div>
 
@@ -247,6 +314,29 @@ function ctrRow(c, hottest){
   </div>`;
 }
 
+// Clock time of an ISO stamp, for "when was this sampled" rather than "how long ago".
+function hhmmss(iso){
+  if(!iso) return '';
+  const d = new Date(iso);
+  return isNaN(d) ? '' : d.toTimeString().slice(0,8);
+}
+
+// The container panel and the metric chips above it are NOT simultaneous:
+// metrics come from CloudMonitor (an average over the agent's window), container
+// usage from a `docker stats` sample taken later in the same cycle over SSH. A
+// short spike can land in one and miss the other, which looks like a bug unless
+// the page says when each was taken.
+function sampledAt(det){
+  const iso = det && det.containers_updated_at;
+  if(!iso) return '';
+  const age = (Date.now() - new Date(iso).getTime()) / 1000;
+  const stale = !(age < 600);          // NaN-safe: an unparseable stamp reads stale
+  const title = 'docker stats sampled at ' + iso +
+                ' - the metrics above come from CloudMonitor and describe a slightly ' +
+                'different moment, so a brief spike can appear in one and not the other';
+  return `<span class="sec-when${stale?' stale':''}" title="${esc(title)}">usage @ ${esc(hhmmss(iso))}</span>`;
+}
+
 function containersBlock(det){
   // A managed instance (RDS) has no shell and never reports containers - its
   // engine + status live on the spec line instead, so say nothing here.
@@ -256,14 +346,14 @@ function containersBlock(det){
   // `docker ps` succeeded but `docker stats` timed out, so usage is missing.
   const note = det.containers_error
     ? `<div class="ctrs-note">${esc(det.containers_error)}</div>` : '';
-  if(!list.length) return note ? `<div class="sec-label">Docker services</div>${note}` : '';
+  if(!list.length) return note ? `<div class="sec-label"><span>Docker services</span></div>${note}` : '';
   const bad = det.containers_attention || 0;
   const hottest = (list.filter(c=>c.cpu_pct!=null)
                        .sort((a,b)=>b.cpu_pct-a.cpu_pct)[0]||{}).name;
   const label = bad
     ? `Docker services &mdash; <span style="color:var(--bad)">${bad} need${bad===1?'s':''} attention</span>`
     : `Docker services &mdash; ${list.length} running`;
-  return `<div class="sec-label">${label}</div>${note}<div class="ctrs">${list.map(c=>ctrRow(c, hottest)).join('')}</div>`;
+  return `<div class="sec-label"><span>${label}</span>${sampledAt(det)}</div>${note}<div class="ctrs">${list.map(c=>ctrRow(c, hottest)).join('')}</div>`;
 }
 
 let lastGuidance = {};   // root cause + steps, served by /api/status
@@ -384,7 +474,7 @@ function renderCards(scan, details){
                           || a.inst.name.localeCompare(b.inst.name));
     const cards = prepared.map(({inst, svcs, det, problem})=>{
       const svcBlock = svcs.length
-        ? `<div class="sec-label">Reachability</div><div class="services">${svcs.map(svcPill).join('')}</div>`
+        ? `<div class="sec-label"><span>Reachability</span></div><div class="services">${svcs.map(svcPill).join('')}</div>`
         : '';
       return `<div class="card ${problem?'breach':''}">
         <div class="inst-head">
@@ -392,8 +482,11 @@ function renderCards(scan, details){
             <div class="inst-name">${esc(inst.name)}</div>
             <div class="inst-id">${esc(inst.id)}</div>
           </div>
-          ${problem?'<span class="status-tag breach">ATTENTION</span>'
-                   :'<span class="status-tag ok">OK</span>'}
+          <div style="display:flex;align-items:center;gap:8px">
+            ${inst.id?`<button class="hist-btn" data-hist="${esc(inst.id)}" data-name="${esc(inst.name)}">History</button>`:''}
+            ${problem?'<span class="status-tag breach">ATTENTION</span>'
+                     :'<span class="status-tag ok">OK</span>'}
+          </div>
         </div>
         ${specLine(det && det.spec)}
         <div class="chips">${inst.metrics.map(metricChip).join('')}</div>
@@ -474,6 +567,278 @@ function renderHist(h){
     <td style="color:${x.breach_count?'var(--bad)':'var(--mut)'}">${x.breach_count}</td>
     <td>${x.total}</td></tr>`).join('');
 }
+
+
+/* ===========================================================================
+   History charts
+   A card answers "is it bad now". These answer "was it bad, when, and for how
+   long" - the question you cannot ask of a single instant, and the one that
+   turns "CPU was 81% but every container reads 0%" from a mystery into a
+   one-cycle spike you can see the shape of.
+   Drawn as inline SVG on purpose: no charting library, so nothing is fetched
+   from a CDN this network may not reach, and the page keeps its single-file
+   deploy story.
+   =========================================================================== */
+const CH_RANGES = [
+  {k:'1h',  label:'1 hour',  hours:1},
+  {k:'6h',  label:'6 hours', hours:6},
+  {k:'24h', label:'1 day',   hours:24},
+  {k:'7d',  label:'7 days',  hours:168},
+  {k:'30d', label:'30 days', hours:720},
+  {k:'custom', label:'Custom', hours:null},
+];
+let CH = {id:null, name:'', range:'1h', from:null, to:null, data:null, busy:false};
+
+function chOpen(id, name){
+  CH.id = id; CH.name = name || id; CH.range = '1h'; CH.from = null; CH.to = null; CH.data = null;
+  $('#chTitle').textContent = CH.name;
+  $('#chSub').textContent = id;
+  $('#chCustom').style.display = 'none';
+  $('#chBody').innerHTML = '<div class="chart-empty">Loading&hellip;</div>';
+  chRenderRanges();
+  $('#chartModal').style.display = 'flex';
+  chLoad();
+}
+function chClose(){ $('#chartModal').style.display = 'none'; CH.id = null; }
+
+function chRenderRanges(){
+  $('#chRanges').innerHTML = CH_RANGES.map(r =>
+    `<button data-range="${r.k}" class="${CH.range===r.k?'on':''}">${esc(r.label)}</button>`).join('');
+}
+
+// <input type="datetime-local"> speaks local wall-clock with no zone, so round-trip
+// through Date to get the absolute instant the API expects.
+function chLocalInput(d){
+  const pad = n => String(n).padStart(2,'0');
+  return d.getFullYear()+'-'+pad(d.getMonth()+1)+'-'+pad(d.getDate())+
+         'T'+pad(d.getHours())+':'+pad(d.getMinutes());
+}
+
+function chPickRange(key){
+  CH.range = key;
+  chRenderRanges();
+  if(key === 'custom'){
+    const to = CH.data ? new Date(CH.data.to) : new Date();
+    const from = CH.data ? new Date(CH.data.from) : new Date(Date.now() - 3600e3);
+    $('#chFrom').value = chLocalInput(from);
+    $('#chTo').value = chLocalInput(to);
+    $('#chCustom').style.display = 'flex';
+    return;                      // wait for Apply; do not refetch yet
+  }
+  $('#chCustom').style.display = 'none';
+  CH.from = CH.to = null;
+  chLoad();
+}
+
+function chApplyCustom(){
+  const f = new Date($('#chFrom').value), t = new Date($('#chTo').value);
+  if(isNaN(f) || isNaN(t)){ toast('Pick both a start and an end'); return; }
+  if(f >= t){ toast('Start must be before end'); return; }
+  CH.from = f.toISOString(); CH.to = t.toISOString();
+  chLoad();
+}
+
+async function chLoad(){
+  if(!CH.id || CH.busy) return;
+  CH.busy = true;
+  const id = CH.id;
+  try{
+    const q = new URLSearchParams({instance_id:id, points:'240'});
+    if(CH.from && CH.to){ q.set('from', CH.from); q.set('to', CH.to); }
+    else { q.set('hours', String((CH_RANGES.find(r=>r.k===CH.range)||{hours:1}).hours || 1)); }
+    const r = await api('/api/metrics/history?' + q.toString());
+    if(authGuard(r)) return;
+    if(!r.ok){ $('#chBody').innerHTML = '<div class="chart-empty">Could not load history.</div>'; return; }
+    const d = await r.json();
+    if(CH.id !== id) return;     // the modal moved on while this was in flight
+    CH.data = d;
+    chDraw();
+  }catch(e){
+    $('#chBody').innerHTML = '<div class="chart-empty">Could not load history.</div>';
+  }finally{ CH.busy = false; }
+}
+
+function chGeom(w){
+  const padL=42, padR=12, padT=10, padB=20, H=150;
+  return {w:w, H:H, padL:padL, padR:padR, padT:padT, padB:padB,
+          plotW:Math.max(w-padL-padR, 20), plotH:H-padT-padB};
+}
+
+function chScale(s){
+  // Percentages share one 0-100 frame so CPU, memory and disk are comparable at a
+  // glance and a threshold at 80 sits in the same place on each.
+  if((s.unit||'') === '%') return {lo:0, hi:100};
+  const vals = s.points.map(p=>p.v).filter(v=>v!=null);
+  if(s.threshold!=null) vals.push(s.threshold);
+  if(!vals.length) return {lo:0, hi:1};
+  let lo = Math.min.apply(null, vals), hi = Math.max.apply(null, vals);
+  if(hi === lo) hi = lo + 1;
+  const pad = (hi-lo)*0.1;
+  return {lo:lo-pad, hi:hi+pad};
+}
+
+function chFmtTime(iso, spanHours){
+  const d = new Date(iso);
+  const pad = n => String(n).padStart(2,'0');
+  const hm = pad(d.getHours())+':'+pad(d.getMinutes());
+  return spanHours > 48 ? (pad(d.getMonth()+1)+'/'+pad(d.getDate())+' '+hm) : hm;
+}
+
+function chIsOver(s, v){
+  if(v==null || s.threshold==null) return false;
+  return (s.comparison||'>').indexOf('<')===0 ? v < s.threshold : v > s.threshold;
+}
+
+function chSvg(s, i, g, spanHours){
+  const n = s.points.length;
+  const sc = chScale(s);
+  const X = k => g.padL + (n<=1 ? g.plotW/2 : (k/(n-1))*g.plotW);
+  const Y = v => g.padT + (1 - (v - sc.lo)/(sc.hi - sc.lo)) * g.plotH;
+
+  let d = '', pen = false;
+  for(let k=0;k<n;k++){
+    const v = s.points[k].v;
+    if(v==null){ pen = false; continue; }
+    d += (pen?'L':'M') + X(k).toFixed(1) + ' ' + Y(v).toFixed(1) + ' ';
+    pen = true;
+  }
+
+  const grid = [sc.hi, (sc.hi+sc.lo)/2, sc.lo].map(v =>
+    `<line class="grid" x1="${g.padL}" y1="${Y(v).toFixed(1)}" x2="${(g.padL+g.plotW).toFixed(1)}" y2="${Y(v).toFixed(1)}"/>`+
+    `<text class="axis" x="${g.padL-6}" y="${(Y(v)+3).toFixed(1)}" text-anchor="end">${v.toFixed(0)}</text>`
+  ).join('');
+
+  let thr = '';
+  if(s.threshold!=null && s.threshold>=sc.lo && s.threshold<=sc.hi){
+    const ty = Y(s.threshold).toFixed(1);
+    thr = `<line class="thr" x1="${g.padL}" y1="${ty}" x2="${(g.padL+g.plotW).toFixed(1)}" y2="${ty}"/>`+
+          `<text class="thrtxt" x="${(g.padL+g.plotW-2).toFixed(1)}" y="${(Y(s.threshold)-3).toFixed(1)}" text-anchor="end">alert ${esc(s.comparison||'>')}${s.threshold}</text>`;
+  }
+
+  const dots = s.points.map((p,k)=> chIsOver(s,p.v)
+    ? `<circle class="over" cx="${X(k).toFixed(1)}" cy="${Y(p.v).toFixed(1)}" r="2.4"/>` : '').join('');
+
+  const tickIdx = (n>1 ? [0, Math.floor((n-1)/3), Math.floor(2*(n-1)/3), n-1] : [0]);
+  const ticks = tickIdx.filter((v,idx,arr)=>arr.indexOf(v)===idx)
+    .map(k=>`<text class="axis" x="${X(k).toFixed(1)}" y="${g.H-6}" text-anchor="${k===0?'start':(k===n-1?'end':'middle')}">${esc(chFmtTime(s.points[k].t, spanHours))}</text>`)
+    .join('');
+
+  return `<svg class="chart" data-i="${i}" width="${g.w}" height="${g.H}" viewBox="0 0 ${g.w} ${g.H}">
+    ${grid}${thr}
+    <path class="line" d="${d.trim()}"/>
+    ${dots}
+    <line class="cursor" x1="0" y1="${g.padT}" x2="0" y2="${g.padT+g.plotH}"/>
+    <circle class="cdot" cx="0" cy="0" r="3"/>
+    ${ticks}
+    <rect x="${g.padL}" y="${g.padT}" width="${g.plotW}" height="${g.plotH}" fill="transparent"/>
+  </svg>`;
+}
+
+function chDraw(){
+  const d = CH.data;
+  const body = $('#chBody');
+  if(!d || !d.series || !d.series.length){
+    body.innerHTML = '<div class="chart-empty">No metrics recorded for this instance in that range.</div>';
+    return;
+  }
+  const w = Math.max(body.clientWidth || 820, 320);
+  const g = chGeom(w);
+  const spanHours = (new Date(d.to) - new Date(d.from)) / 3600e3;
+  const bucketMin = Math.round((d.bucket_seconds||300)/60);
+
+  const blocks = d.series.map((s,i)=>{
+    const vals = s.points.map(p=>p.v).filter(v=>v!=null);
+    const gaps = s.points.filter(p=>p.v==null).length;
+    const over = s.points.filter(p=>chIsOver(s,p.v)).length;
+    if(!vals.length){
+      return `<div class="chart-wrap"><div class="chart-head">
+        <span class="chart-label">${esc(s.label)}</span></div>
+        <div class="chart-empty">No data in this range &mdash; the metric was not reporting.</div></div>`;
+    }
+    const peak = (s.aggregate==='min' ? Math.min.apply(null,vals) : Math.max.apply(null,vals));
+    const meta = [
+      `${s.aggregate==='min'?'low':'peak'} ${peak.toFixed(1)}${esc(s.unit||'')}`,
+      s.threshold!=null ? `alert ${esc(s.comparison||'>')}${s.threshold}${esc(s.unit||'')}` : '',
+      over ? `<span class="over">${over} over</span>` : '',
+      gaps ? `<span class="gap">${gaps} no-data</span>` : ''
+    ].filter(Boolean).join(' &middot; ');
+    return `<div class="chart-wrap">
+      <div class="chart-head">
+        <span class="chart-label">${esc(s.label)}</span>
+        <span class="chart-meta">${meta}</span>
+      </div>
+      ${chSvg(s, i, g, spanHours)}
+      <div class="chart-tip"></div>
+    </div>`;
+  }).join('');
+
+  const aggWord = (d.series[0] && d.series[0].aggregate === 'min') ? 'lowest' : 'highest';
+  body.innerHTML = blocks + `<div class="chart-empty" style="padding-top:12px">
+      Each point is the ${aggWord} value in a ${bucketMin}-minute bucket, not the
+      average &mdash; averaging hides the short spikes worth finding. Breaks in a
+      line are cycles with no datapoint. Scans run every ${d.interval_minutes} min;
+      history is kept ${d.retention_days} days.
+    </div>`;
+
+  chAttachHover(g, spanHours);
+}
+
+function chAttachHover(g, spanHours){
+  const d = CH.data;
+  document.querySelectorAll('#chBody svg.chart').forEach(svg=>{
+    const s = d.series[parseInt(svg.dataset.i, 10)];
+    if(!s) return;
+    const wrap = svg.parentElement;
+    const tip = wrap.querySelector('.chart-tip');
+    const cur = svg.querySelector('.cursor');
+    const dot = svg.querySelector('.cdot');
+    const n = s.points.length;
+    const sc = chScale(s);
+    const X = k => g.padL + (n<=1 ? g.plotW/2 : (k/(n-1))*g.plotW);
+    const Y = v => g.padT + (1 - (v - sc.lo)/(sc.hi - sc.lo)) * g.plotH;
+    const hide = function(){ cur.style.opacity=0; dot.style.opacity=0; tip.style.opacity=0; };
+    svg.addEventListener('mouseleave', hide);
+    svg.addEventListener('mousemove', function(ev){
+      const r = svg.getBoundingClientRect();
+      // The SVG is laid out at 100% width, so map screen px back into user units.
+      const px = (ev.clientX - r.left) * (g.w / Math.max(r.width,1));
+      let k = n<=1 ? 0 : Math.round((px - g.padL) / g.plotW * (n-1));
+      k = Math.min(Math.max(k, 0), n-1);
+      const p = s.points[k];
+      const x = X(k);
+      cur.setAttribute('x1', x); cur.setAttribute('x2', x); cur.style.opacity = .7;
+      if(p.v==null){ dot.style.opacity = 0; }
+      else { dot.setAttribute('cx', x); dot.setAttribute('cy', Y(p.v)); dot.style.opacity = 1; }
+      const when = new Date(p.t).toLocaleString();
+      const shown = (p.v==null) ? 'no data' : (p.v + (s.unit||''));
+      tip.innerHTML = `<b>${esc(shown)}</b> &middot; ${esc(when)}`;
+      tip.style.opacity = 1;
+      const left = Math.min(Math.max((x / g.w) * r.width - 60, 0), Math.max(r.width - 150, 0));
+      tip.style.left = left + 'px';
+      tip.style.top = '18px';
+    });
+  });
+}
+
+let chResizeTimer = null;
+window.addEventListener('resize', function(){
+  if($('#chartModal').style.display === 'none' || !CH.data) return;
+  clearTimeout(chResizeTimer);
+  chResizeTimer = setTimeout(chDraw, 150);   // SVG px mapping is width-dependent
+});
+
+$('#cards').addEventListener('click', function(ev){
+  const b = ev.target.closest('button[data-hist]');
+  if(b) chOpen(b.dataset.hist, b.dataset.name);
+});
+$('#chRanges').addEventListener('click', function(ev){
+  const b = ev.target.closest('button[data-range]');
+  if(b) chPickRange(b.dataset.range);
+});
+$('#chClose').addEventListener('click', chClose);
+$('#chApply').addEventListener('click', chApplyCustom);
+$('#chartModal').addEventListener('click', function(ev){ if(ev.target.id==='chartModal') chClose(); });
+document.addEventListener('keydown', function(ev){ if(ev.key==='Escape') chClose(); });
 
 function authGuard(r){ if(r.status===401){ window.location='login.html'; return true; } return false; }
 

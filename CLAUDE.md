@@ -74,6 +74,14 @@ dashboard shows everything grouped by environment. Access is gated by SSO
   Finds its own database from `DATABASE_URL`; `RDSDIAG_DSNS` (JSON, by instance
   id) lets one monitor reach a managed instance it does not own - production
   alerts for the whole estate, so it needs evidence from ApsaraDB Staging too.
+- `Backend/history_api.py` - `/api/metrics/history`: the metric series behind the
+  dashboard charts, read from `metric_results` (kept `HISTORY_RETENTION_DAYS`).
+  A card answers "is it bad now"; this answers "was it bad, when, for how long".
+  Buckets keep the **worst** value, never the mean - a one-cycle spike to 81.55%
+  averaged over an hour reads as ~8% and vanishes, which is the exact event the
+  charts exist to find. `>` rules keep the max, `<` rules the min, matching
+  `_pick_point()`. Empty buckets are emitted as `null` on a continuous axis, so a
+  reporting gap is a hole rather than a line drawn flat across it.
 - `Backend/guidance.py` - **root cause + remediation steps**, one copy shared by
   the alert email and the dashboard (served via `/api/status`). Written twice they
   drift, and the copy you read at 2am is the stale one. `variants` give a sharper
@@ -89,7 +97,8 @@ dashboard shows everything grouped by environment. Access is gated by SSO
 **API-only backend** (UI is the separate static frontend). GET `/api/status` |
 POST `/api/scan` (`?auto_alert=true`) | POST `/api/send` | GET `/api/csrf` |
 GET `/api/health` (liveness, public) | GET `/api/ready` (readiness: DB + scan
-freshness, public) | GET/POST `/api/instances`, GET `/api/instances/meta`,
+freshness, public) | GET `/api/metrics/history` (`?instance_id=&hours=` or
+`&from=&to=&points=`) | GET/POST `/api/instances`, GET `/api/instances/meta`,
 PATCH/DELETE `/api/instances/<id>` | GET `/auth/oidc/login` +
 `/auth/oidc/callback` (OIDC), GET `/auth/info` (public), `/auth/dev-login`,
 `/auth/login` (→ FE login), `/auth/logout`.
@@ -183,6 +192,15 @@ are not duplicated onto every metric row and every history entry.
   now `db.session.rollback()` before the I/O and re-read for the write phase.
   Visible as `idle in transaction` in `rdsdiag`'s ACTIVE QUERIES output - which is
   how this was found.
+- **A card's metric and its container usage are NOT simultaneous.** The metric
+  comes from CloudMonitor (an average over the agent's window); container usage
+  from a `docker stats` sample taken later in the same cycle over SSH. A spike
+  short enough to live in one and not the other produces "CPU 81% but every
+  container reads 0%", which looks like a bug. The card now stamps the container
+  panel with `containers_updated_at` (`sampledAt()` in `index.html`). Note also
+  that a container in a **restart loop** burns host CPU that no container can be
+  charged for - the work happens in the daemon, and the container is rarely
+  running when `docker stats` samples it.
 - Keep the scheduler to ONE process (single APScheduler). State is now in
   Postgres, but the scheduler must still be single; run gunicorn `--workers 1`.
 - The scheduler's background scan + the immediate first scan run inside an
@@ -203,6 +221,6 @@ are not duplicated onto every metric row and every history entry.
 
 ## Ideas / backlog
 - Docker container visibility (SSH `docker ps` or Docker API tier).
-- Per-instance thresholds; historical metric charts; scan-history pruning.
+- Per-instance thresholds; scan-history pruning.
 - Per-channel alerts (Slack/webhook); alert de-duplication.
 - Single-use SSO token enforcement (jti/replay table) beyond the 60s exp window.

@@ -216,8 +216,10 @@ def create_app() -> Flask:
 
     from auth.sso import auth_bp, init_oauth
     from instances_api import instances_bp
+    from history_api import history_bp
     app.register_blueprint(main_bp)
     app.register_blueprint(instances_bp)
+    app.register_blueprint(history_bp)
     app.register_blueprint(auth_bp)
     # Register the DWS Hub OIDC client (Authorization Code + PKCE public client).
     init_oauth(app)
