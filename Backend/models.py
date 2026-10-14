@@ -80,7 +80,35 @@ class Instance(db.Model):
     enabled = db.Column(db.Boolean, default=True, nullable=False)
     created_at = db.Column(db.DateTime(timezone=True), default=_utcnow, nullable=False)
 
+    # --- Provider-reported specification (cloudspec.py) ----------------------
+    # Refreshed on a slow cadence, not every scan: hardware does not change every
+    # five minutes, and these are extra API calls. Nullable throughout, so an
+    # instance the provider cannot describe still renders.
+    instance_type = db.Column(db.String(60))    # ecs.c9i.large / pg.n4.6c.1m
+    vcpu = db.Column(db.Integer)
+    memory_mb = db.Column(db.Integer)
+    disk_gb = db.Column(db.Integer)             # ECS: sum of attached disks
+    platform = db.Column(db.String(120))        # ECS OSName, or RDS engine+version
+    provider_status = db.Column(db.String(40))  # ECS/RDS lifecycle: Running, Stopped...
+    specs_updated_at = db.Column(db.DateTime(timezone=True))
+
+    # --- Docker workloads on the box (containers.py) -------------------------
+    # A list of {name, image, state, status, health, ports}. Distinct from
+    # ServiceResult, which is a network probe from the monitor's point of view:
+    # this is what the host itself reports is running.
+    containers_json = db.Column(db.JSON)
+    containers_error = db.Column(db.Text)       # why collection failed, if it did
+    containers_updated_at = db.Column(db.DateTime(timezone=True))
+
     group = db.relationship("InstanceGroup", back_populates="instances")
+
+    def spec_dict(self) -> dict:
+        return {
+            "instance_type": self.instance_type, "vcpu": self.vcpu,
+            "memory_mb": self.memory_mb, "disk_gb": self.disk_gb,
+            "platform": self.platform, "provider_status": self.provider_status,
+            "updated_at": self.specs_updated_at.isoformat() if self.specs_updated_at else None,
+        }
 
 
 class ScanRun(db.Model):

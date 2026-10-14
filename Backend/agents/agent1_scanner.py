@@ -13,7 +13,7 @@ from __future__ import annotations
 import json
 import random
 from concurrent.futures import ThreadPoolExecutor
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 
 import config
 from cloud_client import do_rpc
@@ -54,16 +54,65 @@ def _query_metric_last(metric: dict) -> dict:
     resp = do_rpc(_cms_domain(), CMS_VERSION, "DescribeMetricLast", params,
                   region=config.CLOUDMONITOR_REGION)
 
-    # Datapoints is a JSON-encoded *string* per the API contract.
-    raw_points = resp.get("Datapoints") or "[]"
+    return _pick_point(_datapoints(resp), metric)
+
+
+def _datapoints(resp: dict) -> list:
+    """Datapoints is a JSON-encoded *string* per the API contract."""
     try:
-        points = json.loads(raw_points)
+        return json.loads(resp.get("Datapoints") or "[]") or []
     except (TypeError, json.JSONDecodeError):
-        points = []
+        return []
+
+
+def _pick_point(points: list, metric: dict) -> dict:
+    """The datapoint that matters: newest timestamp, worst value at that instant.
+
+    Some metrics return one series *per device* - `diskusage_utilization` reports
+    every mounted filesystem. Taking whichever happens to sort last means a root
+    filesystem at 100% can be masked by a small partition at 3%, so among the
+    newest points we keep the one closest to breaching. Single-series metrics
+    (CPU, memory) are unaffected.
+    """
     if not points:
         return {}
-    # Most recent datapoint is last by timestamp.
-    return sorted(points, key=lambda p: p.get("timestamp", 0))[-1]
+    newest = max(p.get("timestamp", 0) for p in points)
+    tied = [p for p in points if p.get("timestamp", 0) == newest]
+    if len(tied) == 1:
+        return tied[0]
+    stat = metric.get("stat", "Average")
+    worst = min if metric.get("comparison", ">") in ("<", "<=") else max
+    return worst(tied, key=lambda p: p.get(stat) if p.get(stat) is not None else 0)
+
+
+def _query_metric_recent(metric: dict) -> dict:
+    """Fallback: newest datapoint from an explicit recent window.
+
+    DescribeMetricLast intermittently returns an empty list for agent-reported
+    metrics (memory/disk) - it has a narrow lookback, so a datapoint that has not
+    landed yet reads as no data at all. That empty result became value=None, and
+    a None value is not compared against the threshold, so it counted as healthy:
+    Backend Staging sat at 95% memory for an hour without alerting. Querying an
+    explicit window does not have that blind spot.
+    """
+    end = datetime.now(timezone.utc)
+    start = end - timedelta(minutes=config.METRIC_LOOKBACK_MINUTES)
+    fmt = "%Y-%m-%dT%H:%M:%SZ"
+    params = {
+        "Namespace": metric["namespace"],
+        "MetricName": metric["metric_name"],
+        "StartTime": start.strftime(fmt),
+        "EndTime": end.strftime(fmt),
+        "Length": "1000",
+    }
+    if metric.get("period"):
+        params["Period"] = metric["period"]
+    if metric.get("dimensions"):
+        params["Dimensions"] = metric["dimensions"]
+
+    resp = do_rpc(_cms_domain(), CMS_VERSION, "DescribeMetricList", params,
+                  region=config.CLOUDMONITOR_REGION)
+    return _pick_point(_datapoints(resp), metric)
 
 
 def _mock_value(metric: dict) -> float:
@@ -87,6 +136,12 @@ def scan_metric(metric: dict) -> dict:
         source = "cloudmonitor"
         try:
             point = _query_metric_last(metric)
+            if not point:
+                # Narrow-lookback blind spot: ask for an explicit window instead
+                # of concluding "no data" (and therefore "healthy").
+                point = _query_metric_recent(metric)
+                if point:
+                    source = "cloudmonitor-lookback"
             if point:
                 value = point.get(stat)
                 if value is not None:
@@ -137,6 +192,10 @@ def run_scan() -> dict:
     else:
         results = []
     breaches = [r for r in results if r["breached"]]
+    # Metrics that produced no value at all. NOT the same as "healthy": whether
+    # one is worth alerting on depends on whether it was reporting before (see
+    # state.recent_problem_key_sets), which needs history this function lacks.
+    no_data = [r for r in results if r["value"] is None]
     return {
         "scanned_at": datetime.now(timezone.utc).isoformat(),
         "mode": "mock" if (config.MOCK_MODE or not config.credentials_present()) else "live",
@@ -144,6 +203,8 @@ def run_scan() -> dict:
         "breach_count": len(breaches),
         "results": results,
         "breaches": breaches,
+        "no_data": no_data,
+        "no_data_count": len(no_data),
     }
 
 

@@ -113,6 +113,10 @@ def status():
         "auto_alert_on_breach": config.AUTO_ALERT_ON_BREACH,
         "recipients": config.ALERT_RECIPIENTS,
     }
+    # Root cause + steps for the dashboard's attention band. Served rather than
+    # duplicated in JS so the page and the alert email cannot drift apart.
+    import guidance
+    snap["guidance"] = guidance.for_api()
     return jsonify(snap)
 
 
@@ -212,8 +216,10 @@ def create_app() -> Flask:
 
     from auth.sso import auth_bp, init_oauth
     from instances_api import instances_bp
+    from history_api import history_bp
     app.register_blueprint(main_bp)
     app.register_blueprint(instances_bp)
+    app.register_blueprint(history_bp)
     app.register_blueprint(auth_bp)
     # Register the DWS Hub OIDC client (Authorization Code + PKCE public client).
     init_oauth(app)

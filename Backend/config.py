@@ -112,6 +112,37 @@ FLASK_PORT = int(os.getenv("FLASK_PORT", "5000"))
 # instances or slow/dead hosts (which otherwise each wait out the timeout).
 SCAN_CONCURRENCY = int(os.getenv("SCAN_CONCURRENCY", "8"))
 
+# When DescribeMetricLast comes back empty, re-ask over this explicit window
+# (DescribeMetricList) before concluding there is no data. Agent-reported
+# memory/disk points land irregularly, and an empty result used to be read as
+# "healthy" because a None value is never compared against its threshold.
+METRIC_LOOKBACK_MINUTES = _int("METRIC_LOOKBACK_MINUTES", 15)
+
+# --- Instance specification (cloudspec.py) -----------------------------------
+# vCPU/RAM/disk come from the owning product's describe API (ECS DescribeInstances
+# + DescribeDisks, RDS DescribeDBInstanceAttribute), which needs ecs:Describe* /
+# rds:DescribeDBInstanceAttribute on the RAM user. Hardware does not change every
+# five minutes, so specs are cached on the instance row and refreshed this often.
+SPECS_REFRESH_HOURS = _int("SPECS_REFRESH_HOURS", 6)
+
+# --- Docker workloads (containers.py) ----------------------------------------
+# Collected over the SAME least-privilege SSH path as diagnostics (one extra
+# allow-listed focus), so it needs the DIAG_SSH_* identity configured. Only these
+# roles are asked - a managed RDS instance has no shell, and a router or a Windows
+# box has no docker.
+CONTAINERS_ENABLED = _b("CONTAINERS_ENABLED", True)
+CONTAINER_ROLES = tuple(
+    r.strip().lower() for r in
+    _clean(os.getenv("CONTAINER_ROLES", "frontend,backend,db,web")).split(",")
+    if r.strip()
+)
+
+# Treat a metric that STOPS reporting as a problem worth alerting on, rather than
+# silently healthy. Only applies to metrics that had a value in the previous scan,
+# so a box with no CloudMonitor agent (permanently blank memory/disk) stays quiet;
+# and ALERT_CONFIRM_SCANS still applies, so a single missed datapoint is ignored.
+ALERT_ON_NO_DATA = _b("ALERT_ON_NO_DATA", True)
+
 # --- Alerting cadence (flap / flood control) ---------------------------------
 # Auto-alerts fire on TRANSITIONS, not every cycle: a mail goes out when a NEW
 # problem appears, when everything RECOVERS, or as a periodic reminder every
@@ -133,7 +164,9 @@ ALERT_CONFIRM_SCANS = _int("ALERT_CONFIRM_SCANS", 2)
 DIAG_ENABLED = _b("DIAG_ENABLED", False)
 DIAG_SSH_USER = _clean(os.getenv("DIAG_SSH_USER", ""))
 DIAG_SSH_KEY = _clean(os.getenv("DIAG_SSH_KEY", ""))       # path inside the container
-DIAG_SSH_PORT = _int("DIAG_SSH_PORT", 22)
+# Left blank by default so it can be distinguished from "explicitly set to 22":
+# unset means "follow the role's probe port" (see diag_ssh_port_for_role).
+DIAG_SSH_PORT_RAW = _clean(os.getenv("DIAG_SSH_PORT", ""))
 DIAG_REMOTE_SCRIPT = _clean(os.getenv("DIAG_REMOTE_SCRIPT", "/usr/local/bin/cam-diag"))
 # Seconds per host. The remote script inspects several containers (and each
 # PostgreSQL instance's live queries), so a "focus=all" run on a busy box needs
@@ -141,6 +174,39 @@ DIAG_REMOTE_SCRIPT = _clean(os.getenv("DIAG_REMOTE_SCRIPT", "/usr/local/bin/cam-
 DIAG_TIMEOUT = _int("DIAG_TIMEOUT", 45)
 DIAG_MAX_HOSTS = _int("DIAG_MAX_HOSTS", 3)   # cap per alert, keeps the cycle short
 DIAG_MAX_CHARS = _int("DIAG_MAX_CHARS", 6000)
+
+# --- Managed-database evidence (rdsdiag.py) ----------------------------------
+# A managed ApsaraDB instance has no shell, so the SSH collector above cannot
+# reach it and a database breach would alert with generic guidance only. When the
+# breaching instance IS the database this monitor connects to, collect evidence
+# over SQL instead: active queries, who is connected, and the costliest
+# statements. Read-only and capped by a server-side statement_timeout.
+RDSDIAG_ENABLED = _b("RDSDIAG_ENABLED", True)
+RDSDIAG_TIMEOUT = _int("RDSDIAG_TIMEOUT", 5)
+
+
+def rdsdiag_dsns() -> dict:
+    """``{instance_id: libpq DSN}`` for managed instances this monitor does not
+    own, as JSON in RDSDIAG_DSNS.
+
+    JSON rather than the `id:value` form the PROBE_* overrides use: a DSN carries
+    ":" "@" and possibly "," in the password, any of which would break a
+    delimiter-split. Malformed input disables the feature rather than crashing a
+    scan - evidence is a nice-to-have, alerting is not.
+    """
+    import json
+    # NOT _clean(): that strips from the first "#", and a password containing one
+    # would silently truncate the JSON into something unparseable - which reads as
+    # "no credentials" rather than as a configuration error.  No inline comments
+    # on this line.
+    raw = os.getenv("RDSDIAG_DSNS", "").strip()
+    if not raw:
+        return {}
+    try:
+        parsed = json.loads(raw)
+        return {str(k): str(v) for k, v in parsed.items()} if isinstance(parsed, dict) else {}
+    except Exception:
+        return {}
 # Reject unknown SSH host keys instead of auto-accepting them (stricter; needs
 # the host keys pre-seeded in the container's known_hosts).
 DIAG_STRICT_HOST_KEY = _b("DIAG_STRICT_HOST_KEY", False)
@@ -189,6 +255,25 @@ SESSION_COOKIE_SAMESITE = os.getenv(
 # A single origin (used for post-login redirects). Defensive: if someone
 # comma-joins values (that's CORS_ORIGINS' job, not this), take the first.
 FRONTEND_URL = os.getenv("FRONTEND_URL", "http://localhost:8080").split(",")[0].strip().rstrip("/")
+
+
+def probe_http_host() -> str:
+    """Hostname to send as the `Host` header when probing the frontend server.
+
+    A shared nginx routes by `server_name`. Probing it by IP sends `Host: <ip>`,
+    which matches no vhost, so nginx answers from its DEFAULT server - usually a
+    404 that reports as an outage while the real site is fine. This is exactly the
+    false "Frontend Staging HTTP DOWN / unexpected status 404" alert.
+
+    Defaults to the hostname of FRONTEND_URL, which IS the vhost this deployment
+    serves, so it is correct without configuration. PROBE_FE_HTTP_HOST overrides;
+    set it empty to go back to probing by IP.
+    """
+    override = os.getenv("PROBE_FE_HTTP_HOST")
+    if override is not None:
+        return _clean(override)
+    from urllib.parse import urlsplit
+    return (urlsplit(FRONTEND_URL).hostname or "").strip()
 # Browser origins allowed to call this API with credentials (comma-separated).
 # Defaults to FRONTEND_URL. Never use "*" with credentials.
 CORS_ORIGINS = [
@@ -322,19 +407,106 @@ def metric_templates_for(inst: dict) -> list:
 # Ports below are overridable per role via env so a probe can be corrected without
 # a code change; the defaults match this estate (Postgres not MySQL, the API on
 # APP_HOST_PORT, and no TLS on the frontend yet).
+def _id_map(name: str) -> dict:
+    """Parse `id:value,id:value` per-instance probe overrides.
+
+    Probe settings are per ROLE, which breaks as soon as one monitor watches two
+    environments: the production monitor's `frontend` role puts sshd on 1818 and
+    the vhost at cloud-monitoring.kpndomain.com, but Frontend *Staging* uses 22
+    and test-cloud-monitoring.kpndomain.com. Without a per-instance escape hatch,
+    pointing production at the staging boxes produces guaranteed false outages -
+    refused SSH on the wrong port, and a 404 from nginx's default vhost.
+
+    An env map rather than a column: it needs no migration, no UI, and it sits
+    next to the other PROBE_* settings it overrides.
+    """
+    out = {}
+    for pair in _clean(os.getenv(name, "")).split(","):
+        key, _, value = pair.strip().partition(":")
+        key, value = key.strip(), value.strip()
+        if key and value:
+            out[key] = value
+    return out
+
+
+PROBE_SSH_PORT_OVERRIDES = _id_map("PROBE_SSH_PORT_OVERRIDES")
+PROBE_HTTP_HOST_OVERRIDES = _id_map("PROBE_HTTP_HOST_OVERRIDES")
+
+
+def ssh_port_for_instance(inst: dict) -> int:
+    """SSH port for ONE instance: its override, else its role's port, else 22."""
+    raw = PROBE_SSH_PORT_OVERRIDES.get((inst.get("id") or "").strip())
+    if raw:
+        try:
+            return int(raw)
+        except ValueError:
+            pass
+    return ssh_port_for_role(inst.get("role", ""))
+
+
+def http_host_for_instance(inst: dict, default: str) -> str:
+    """`Host` header for ONE instance's HTTP probe, else the role default."""
+    return PROBE_HTTP_HOST_OVERRIDES.get((inst.get("id") or "").strip()) or default
+
+
+def ssh_port_for_role(role: str) -> int:
+    """SSH port for one role: PROBE_<ROLE>_SSH_PORT, else PROBE_SSH_PORT, else 22.
+
+    Hardened hosts commonly move sshd off 22 - and not uniformly across an estate,
+    so this is per role rather than one global (e.g. FE/BE on 1818 while the DB box
+    is still on 22). Symptom of getting it wrong: the probe reports
+    ConnectionRefusedError, because the TCP RST proves the host WAS reached; a port
+    blocked by a security group times out instead.
+
+    The same value drives the on-breach diagnostics SSH connection, so a corrected
+    probe port fixes evidence collection too.
+    """
+    default = _int("PROBE_SSH_PORT", 22)
+    role = (role or "").strip().lower()
+    return _int(f"PROBE_{role.upper()}_SSH_PORT", default) if role else default
+
+
+def diag_ssh_port_for_instance(inst: dict) -> int:
+    """Diagnostics SSH port for ONE instance - honours the per-instance override
+    so a corrected probe port fixes evidence collection on that host too."""
+    if DIAG_SSH_PORT_RAW:
+        try:
+            return int(DIAG_SSH_PORT_RAW)
+        except ValueError:
+            pass
+    return ssh_port_for_instance(inst)
+
+
+def diag_ssh_port_for_role(role: str) -> int:
+    """SSH port for on-breach diagnostics.
+
+    ``DIAG_SSH_PORT`` wins when explicitly set (diagnostics may legitimately use a
+    different port than the probe); otherwise it follows the role's probe port, so
+    correcting a non-standard sshd port in one place fixes both the SSH probe and
+    evidence collection.
+    """
+    if DIAG_SSH_PORT_RAW:
+        try:
+            return int(DIAG_SSH_PORT_RAW)
+        except ValueError:
+            pass
+    return ssh_port_for_role(role)
+
+
 SERVICE_CHECKS_BY_ROLE = {
     "db": [
         {"name": "PostgreSQL", "type": "tcp", "port": _int("PROBE_DB_PORT", 5433)},
-        {"name": "SSH", "type": "tcp", "port": 22},
+        {"name": "SSH", "type": "tcp", "port": ssh_port_for_role("db")},
     ],
     "frontend": [
         {"name": "HTTP", "type": "http", "scheme": "http",
-         "port": _int("PROBE_FE_HTTP_PORT", 80), "path": "/", "expect": [200, 301, 302]},
+         "port": _int("PROBE_FE_HTTP_PORT", 80), "path": "/", "expect": [200, 301, 302],
+         "host_header": probe_http_host()},
         # No HTTPS check by default — staging is HTTP-only, so a 443 probe would
         # report a false outage. Set PROBE_FE_HTTPS=true once TLS is in place.
         *([{"name": "HTTPS", "type": "http", "scheme": "https", "port": 443,
             "path": "/", "expect": [200, 301, 302]}] if _b("PROBE_FE_HTTPS", False) else []),
-        {"name": "SSH", "type": "tcp", "port": 22},
+        {"name": "SSH", "type": "tcp", "port": ssh_port_for_role("frontend")},
     ],
     "backend": [
         # The monitor cannot usually probe a published port on its OWN host: the
@@ -347,7 +519,7 @@ SERVICE_CHECKS_BY_ROLE = {
             "port": _int("PROBE_BE_API_PORT", 5050),
             "path": os.getenv("PROBE_BE_API_PATH", "/api/health").strip() or "/api/health",
             "expect": [200, 204]}] if _b("PROBE_BE_API", True) else []),
-        {"name": "SSH", "type": "tcp", "port": 22},
+        {"name": "SSH", "type": "tcp", "port": ssh_port_for_role("backend")},
     ],
     "rds": [
         # Managed instance: no SSH, and the endpoint only answers if the monitor's
@@ -366,7 +538,7 @@ SERVICE_CHECKS_BY_ROLE = {
         {"name": "IMAPS", "type": "tcp", "port": 993},
     ],
     "router": [
-        {"name": "SSH", "type": "tcp", "port": 22},
+        {"name": "SSH", "type": "tcp", "port": ssh_port_for_role("router")},
         {"name": "API", "type": "tcp", "port": 8728},
         {"name": "Winbox", "type": "tcp", "port": 8291},
     ],
@@ -409,6 +581,13 @@ def build_service_checks(instances: list) -> list:
     for inst in instances:
         host = (inst.get("host") or "").strip()
         for svc in SERVICE_CHECKS_BY_ROLE.get(inst.get("role", ""), []):
+            # Role defaults, then this instance's overrides (see _id_map).
+            port = svc.get("port")
+            if svc["name"] == "SSH":
+                port = ssh_port_for_instance(inst)
+            host_header = svc.get("host_header") or None
+            if host_header:
+                host_header = http_host_for_instance(inst, host_header)
             checks.append({
                 "key": f"{inst['id']}_{svc['name'].lower().replace(' ', '_')}",
                 "group": inst.get("group", "Ungrouped"),
@@ -417,10 +596,12 @@ def build_service_checks(instances: list) -> list:
                 "name": svc["name"],
                 "type": svc["type"],
                 "host": host,
-                "port": svc.get("port"),
+                "port": port,
                 "scheme": svc.get("scheme", "http"),
                 "path": svc.get("path", "/"),
                 "expect": svc.get("expect", [200]),
+                # Only set for name-based vhosts; None means "probe by IP".
+                "host_header": host_header,
             })
     return checks
 
