@@ -11,8 +11,12 @@ dashboard shows everything grouped by environment. Access is gated by SSO
 ## Layout
 - `Backend/` - all Python. Flat modules (run with `Backend/` on `sys.path`).
 - `Frontend/` - **standalone static frontend** (plain HTML/JS under nginx, NOT
-  served by Flask). `public/` has `index.html` (dashboard), `instances.html`,
-  `login.html`, `config.js.template` (runtime `API_BASE`); plus `nginx.conf`,
+  served by Flask). `public/` has `index.html` (Overview: state hero, triage queue + runbook,
+  fleet map, fleet cards), `instance.html?id=` (one instance: history chart,
+  containers, runbook, live evidence), `activity.html` (scan log + last alert),
+  `instances.html` (inventory), `login.html`, plus the shared `app.css` (theme
+  tokens, dark + light) and `app.js` (API client, top bar, `analyse()`), and
+  `config.js.template` (runtime `API_BASE`); plus `nginx.conf`,
   `Dockerfile`, `40-config-js.sh`. It calls the backend API cross-origin with
   `credentials:'include'`; the backend is API-only.
 - `Docs/` - docs (incl. `SSO-TARGET-APP-INTEGRATION.md`). `Assets/` - images.
@@ -149,7 +153,7 @@ are not duplicated onto every metric row and every history entry.
   guidance only - the evidence collector failed silently against an endpoint that
   can never answer.
 - **The dashboard leads with a triage band**, not with cards. `attentionItems()`
-  in `index.html` flattens everything wrong into one ranked list - provider status
+  in `app.js` flattens everything wrong into one ranked list - provider status
   first (a stopped instance explains its own dead metrics), then breaches with the
   heaviest container named, then down probes, then unhealthy containers - each
   with a one-line next step. Instances with problems sort to the front of their
@@ -197,7 +201,7 @@ are not duplicated onto every metric row and every history entry.
   from a `docker stats` sample taken later in the same cycle over SSH. A spike
   short enough to live in one and not the other produces "CPU 81% but every
   container reads 0%", which looks like a bug. The card now stamps the container
-  panel with `containers_updated_at` (`sampledAt()` in `index.html`). Note also
+  panel with `containers_updated_at` (`sampledAt()` in `app.js`). Note also
   that a container in a **restart loop** burns host CPU that no container can be
   charged for - the work happens in the daemon, and the container is rarely
   running when `docker stats` samples it.
