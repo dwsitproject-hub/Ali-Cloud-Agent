@@ -179,3 +179,31 @@ def test_top_consumers_by_cpu_and_by_memory():
 def test_top_consumers_skips_containers_with_no_figures():
     rows, _ = containers.parse(_line("stopped", "img", "exited", "Exited (0) 1 day ago"))
     assert containers.top_consumers(rows, "cpu") == []
+
+
+def test_nothing_stands_out_when_every_container_is_idle():
+    """Frontend Staging breached CPU at 83.6% while all 29 containers read 0.0%.
+
+    The ranking still had a first row, and it was presented as the heaviest
+    service. A list of idle containers must not name a culprit.
+    """
+    rows, _ = containers.parse("\n".join([
+        _line("pid-web", "img", "running", "Up 34 minutes"), _stat("pid-web", "0.00%", "0.10%", "3.4MiB / 7.2GiB"),
+        _line("web-1", "img", "running", "Up 2 months"), _stat("web-1", "0.00%", "12.00%", "62MiB / 512MiB"),
+    ]))
+    assert containers.stands_out(rows, "cpu") is False
+    assert containers.stands_out(rows, "mem") is True       # 12% of memory is worth naming
+
+
+def test_alert_email_does_not_name_an_idle_container_as_the_cause():
+    from agents import agent2_alerter
+    idle = [{"name": "pid-web", "cpu_pct": 0.0, "mem_pct": 0.1, "mem_usage": "3.4MiB / 7.2GiB", "health": "running"}]
+    busy = [{"name": "api", "cpu_pct": 142.0, "mem_pct": 61.4, "mem_usage": "2.4GiB / 3.9GiB", "health": "healthy"}]
+    quiet = agent2_alerter._top_consumers_section(
+        {"top_consumers": {"Frontend Staging": {"updated_at": "2026-11-10T07:55:05+00:00", "cpu": idle, "mem": idle}}})
+    assert "no container stands out" in quiet
+    assert "<table" not in quiet                              # nothing ranked as a consumer
+    loud = agent2_alerter._top_consumers_section(
+        {"top_consumers": {"Backend Staging": {"updated_at": "2026-11-10T07:55:05+00:00", "cpu": busy, "mem": busy}}})
+    assert "no container stands out" not in loud
+    assert "142.0%" in loud

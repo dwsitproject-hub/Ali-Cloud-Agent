@@ -10,7 +10,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" media="print" onload="this.media='all'">
-<link rel="stylesheet" href="app.css?v=20261110">
+<link rel="stylesheet" href="app.css?v=20261110b">
 </head>
 <body>
 <header class="topbar" id="topbar"></header>
@@ -18,7 +18,7 @@
 <div id="toast" role="status" aria-live="polite"></div>
 
 <script src="config.js"></script>
-<script src="app.js?v=20261110"></script>
+<script src="app.js?v=20261110b"></script>
 <script>
 /* Overview. The page is ordered by what an operator needs during an incident:
    is anything wrong (hero), what and in which order (triage queue), what to do
@@ -191,7 +191,7 @@ function ctrsHtml(i) {
   const bad = det.containers_attention || 0;
   const heavy = i.breaches.length ? C.heaviest(list, i.breaches[0].label) : null;
   const n = C.plural(list.length, 'container');
-  const summary = bad ? `${n} · ${bad} need${bad === 1 ? 's' : ''} attention` : (heavy ? `${n} · ${heavy.name} is the heaviest` : `${n} · all healthy`);
+  const summary = bad ? `${n} · ${bad} need${bad === 1 ? 's' : ''} attention` : (heavy ? `${n} · ${heavy.name} is the heaviest` : (i.breaches.some(m => m.label === 'CPU' || m.label === 'Memory') ? `${n} · none stands out` : `${n} · all healthy`));
   const sorted = list.slice().sort((a, b) => (C.ctrBad(b) ? 1 : 0) - (C.ctrBad(a) ? 1 : 0) || (b === heavy) - (a === heavy) || (b.cpu_pct || 0) - (a.cpu_pct || 0));
   const rows = sorted.slice(0, 4).map(c => `<div class="ctr${C.ctrBad(c) ? ' bad' : ''}${c === heavy ? ' heavy' : ''}" title="${esc([c.image, c.status, c.mem_usage, c.ports].filter(Boolean).join(' · '))}">
       <span>${esc(c.name)}</span><span>${C.pct(c.cpu_pct)} cpu</span><span>${C.pct(c.mem_pct)} mem</span><span class="h">${esc(c.health || 'unknown')}</span></div>`).join('');

@@ -205,9 +205,25 @@
     return '<span class="stamp' + (stale ? ' stale' : '') + '" title="' + esc(title) + '">usage @ ' + utcClock(d) + ' UTC</span>';
   }
 
+  // Below this share a container is not an explanation for a host breach. Naming
+  // "the heaviest" out of a list that all reads 0.0% is worse than naming none:
+  // it sends the operator to an idle service while the real load is somewhere
+  // docker stats cannot see - an image build or a restart loop (both run in the
+  // daemon), or a process on the host itself. Same floor as containers.NEGLIGIBLE_PCT,
+  // so the page and the alert email agree on who is named.
+  const NEGLIGIBLE_PCT = 5;
+  function usageKey(label) { return label === 'Memory' ? 'mem_pct' : 'cpu_pct'; }
+  // The container with the highest figure, whatever that figure is.
+  function busiest(list, label) {
+    const k = usageKey(label);
+    return (list || []).filter(c => c[k] != null).sort((a, b) => b[k] - a[k])[0] || null;
+  }
+  // The container worth naming as the cause - or null when none stands out.
+  // Only CPU and memory: a container's CPU share says nothing about a full disk.
   function heaviest(list, label) {
-    return (list || []).filter(c => c.cpu_pct != null)
-      .sort((a, b) => (label === 'Memory' ? b.mem_pct - a.mem_pct : b.cpu_pct - a.cpu_pct))[0] || null;
+    if (label !== 'CPU' && label !== 'Memory') return null;
+    const c = busiest(list, label);
+    return c && c[usageKey(label)] >= NEGLIGIBLE_PCT ? c : null;
   }
   const BAD_HEALTH = ['unhealthy', 'stopped', 'restarting'];
   function ctrBad(c) { return BAD_HEALTH.includes(c.health); }
@@ -239,9 +255,13 @@
     });
     (scan.results || []).filter(r => r.breached).forEach(r => {
       const det = details[r.instance_id] || {};
-      const hot = heaviest(det.containers, r.label);
+      const hot = heaviest(det.containers, r.label), top = busiest(det.containers, r.label);
+      const word = r.label === 'Memory' ? 'mem' : 'cpu';
       const culprit = hot
         ? 'Heaviest service on this host: ' + hot.name + ' (' + ctrNum(hot.cpu_pct) + '% cpu, ' + ctrNum(hot.mem_pct) + '% mem' + (hot.mem_usage ? ', ' + hot.mem_usage : '') + ')'
+        : (r.label !== 'CPU' && r.label !== 'Memory') ? 'Container CPU and memory figures do not explain this one - follow the runbook'
+        : top ? 'No container stands out: the busiest, ' + top.name + ', read ' + ctrNum(top[usageKey(r.label)]) + '% ' + word +
+            ' when docker stats sampled. The load is outside the containers, or had already passed'
         : 'No per-container figures for this host - diagnostics may not be set up on it';
       const under = (r.comparison || '>').charAt(0) === '<';
       items.push({ sev: 1, kind: r.label, tone: 'hot', tag: 'BREACH', instId: r.instance_id, inst: r.instance_name, group: r.group || '', sub: r.label, metric: r,
@@ -384,9 +404,22 @@
       '<span class="v">' + esc(v) + '</span></div>';
     let title = 'What we know', rows = '', note = '';
     if (item.metric) {
-      const key = item.kind === 'Memory' ? 'mem_pct' : 'cpu_pct', word = item.kind === 'Memory' ? 'memory' : 'CPU';
+      const key = usageKey(item.kind), word = item.kind === 'Memory' ? 'memory' : 'CPU';
       const top = (det.containers || []).filter(c => c[key] != null).sort((a, b) => b[key] - a[key]).slice(0, 3);
-      if (top.length && item.kind !== 'Disk') {
+      const sampled = parseUtc(det.containers_updated_at);
+      if (top.length && item.kind !== 'Disk' && top[0][key] < NEGLIGIBLE_PCT) {
+        // Figures exist and none of them is the answer. Say that, rather than
+        // listing three idle containers under a heading that calls them heavy.
+        title = 'What docker stats saw';
+        rows = row('Containers', plural((det.containers || []).length, 'container') + ' sampled') +
+          row('Busiest', top[0].name + ' at ' + ctrNum(top[0][key]) + '% ' + word);
+        note = 'No container was using ' + NEGLIGIBLE_PCT + '% ' + word + ' or more' + (sampled ? ' at ' + utcClock(sampled) + ' UTC' : '') +
+          ', so none of them explains the ' + num(item.metric.value) + (item.metric.unit || '') + '. ' +
+          (item.kind === 'Memory'
+            ? 'The memory is held outside the containers: a process running on the host itself, or cache.'
+            : 'Host CPU that no container is charged for is work in the docker daemon (an image build, or a container in a restart loop) ' +
+              'or a process running on the host itself. It can also be a spike that ended before the sample: check Time over limit on the instance page.');
+      } else if (top.length && item.kind !== 'Disk') {
         title = 'Heaviest containers by ' + word;
         rows = top.map(c => row(c.name, ctrNum(c[key]) + '%' + (key === 'mem_pct' && c.mem_usage ? ' · ' + c.mem_usage : ''), c[key])).join('');
         const d = parseUtc(det.containers_updated_at);
@@ -576,7 +609,7 @@
     $: $, esc: esc, api: api, loadCsrf: loadCsrf, postHeaders: postHeaders, authGuard: authGuard, toast: toast,
     parseUtc: parseUtc, utcClock: utcClock, utcStamp: utcStamp, span: span, num: num, ctrNum: ctrNum, pct: pct, plural: plural,
     roleName: roleName, roleAbbr: roleAbbr, chip: chip, ring: ring, nodeRing: nodeRing, closest: closest, shortLabel: shortLabel,
-    probe: probe, portOf: portOf, shortErr: shortErr, specBits: specBits, sampledAt: sampledAt, heaviest: heaviest, ctrBad: ctrBad,
+    probe: probe, portOf: portOf, shortErr: shortErr, specBits: specBits, sampledAt: sampledAt, heaviest: heaviest, busiest: busiest, ctrBad: ctrBad,
     breachInfo: breachInfo, sparkSvg: sparkSvg, runbook: runbook, diagnosticsHtml: diagnosticsHtml, ARROW: ARROW,
     start: start, refresh: refresh, sendAlert: sendAlert, current: () => lastAn
   };

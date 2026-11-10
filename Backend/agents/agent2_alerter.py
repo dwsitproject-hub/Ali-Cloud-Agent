@@ -14,6 +14,7 @@ import logging
 from datetime import datetime, timezone
 
 import config
+import containers
 from cloud_client import do_rpc
 
 log = logging.getLogger("alerter")
@@ -249,7 +250,26 @@ def _top_consumers_section(scan: dict) -> str:
         when = d.get("updated_at") or "unknown"
         tables = []
         for metric, title in (("cpu", "Top CPU"), ("mem", "Top memory")):
-            body = rows_for(d.get(metric) or [], metric)
+            ranked = [c for c in (d.get(metric) or [])
+                      if c.get("cpu_pct" if metric == "cpu" else "mem_pct") is not None]
+            if ranked and not containers.stands_out(ranked, metric):
+                # Figures exist and none of them is the answer. A table of idle
+                # containers under "which service is consuming the host" names a
+                # culprit that is not one, so say what the figures do show.
+                top = ranked[0]
+                value = top.get("cpu_pct" if metric == "cpu" else "mem_pct")
+                where = ("an image build or a container in a restart loop (both run in "
+                         "the docker daemon), or a process on the host itself"
+                         if metric == "cpu" else
+                         "a process running on the host itself, or cache")
+                tables.append(
+                    f"<div style='margin:8px 0 0;font-size:12px;color:#555'>"
+                    f"<b>{title}: no container stands out.</b> The busiest, "
+                    f"<code>{html.escape(top.get('name', ''))}</code>, read {value}% when "
+                    f"sampled. If this is the metric that breached, the load is outside "
+                    f"the containers - {where} - or it had already passed.</div>")
+                continue
+            body = rows_for(ranked, metric)
             if not body:
                 continue
             tables.append(
