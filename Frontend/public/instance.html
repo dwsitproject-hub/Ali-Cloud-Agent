@@ -1,0 +1,375 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Instance · Cloud Agent Monitoring</title>
+<script>(function(){try{var t=localStorage.getItem('cam-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t)}catch(e){}})()</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" media="print" onload="this.media='all'">
+<link rel="stylesheet" href="app.css?v=20261110">
+</head>
+<body>
+<header class="topbar" id="topbar"></header>
+<main class="main" id="app" style="gap:24px">
+  <nav class="crumbs" id="crumbs" aria-label="Breadcrumb"></nav>
+  <section class="inst-head" id="head" aria-label="Instance"><p class="mut">Loading&hellip;</p></section>
+  <div id="issues"></div>
+  <div class="split">
+    <div class="col-a">
+      <section class="panel" aria-label="Metric history">
+        <div class="panel-head"><h2>History</h2><span class="small mut">Was it bad, when, and for how long.</span></div>
+        <div class="seg" id="chTabs" role="group" aria-label="Metric"></div>
+        <div class="seg" id="chRanges" role="group" aria-label="Time range"></div>
+        <div class="custom-range" id="chCustom" hidden>
+          <div class="field"><label for="chFrom">From (local time)</label><input class="input" type="datetime-local" id="chFrom"></div>
+          <div class="field"><label for="chTo">To (local time)</label><input class="input" type="datetime-local" id="chTo"></div>
+          <button type="button" class="btn" id="chApply">Apply</button>
+        </div>
+        <div id="chBody"><div class="chart-empty">Loading&hellip;</div></div>
+        <div class="stats" id="chStats"></div>
+        <p class="tiny mut" id="chNote"></p>
+      </section>
+      <section class="panel" id="ctrPanel" aria-label="Docker services" hidden></section>
+    </div>
+    <div class="col-b">
+      <section class="panel" id="nowPanel" aria-label="Current readings"></section>
+      <aside class="panel raised" id="runbookBox" aria-label="Runbook" hidden></aside>
+      <section class="panel" id="evPanel" aria-label="Live evidence" hidden></section>
+    </div>
+  </div>
+</main>
+<div id="toast" role="status" aria-live="polite"></div>
+
+<script src="config.js"></script>
+<script src="app.js?v=20261110"></script>
+<script>
+/* One instance: what is open on it, its history, what it runs, and the runbook.
+   The Overview answers "is it bad now"; the history chart here answers "was it
+   bad, when, and for how long" - the question a single instant cannot. */
+const C = window.CAM, $ = C.$, esc = C.esc;
+const ID = new URLSearchParams(location.search).get('id') || '';
+let AN = null, sel = null, lastScanAt = null;
+
+function render(an) {
+  AN = an;
+  const inst = an.insts[ID], det = an.details[ID] || (inst && inst.det) || null;
+  if (!inst && !det) {
+    $('#crumbs').innerHTML = '<a href="index.html">Overview</a>';
+    $('#head').innerHTML = `<div class="page-head"><h1>Unknown instance</h1><p>No instance with the id <span class="mono">${esc(ID || '(none)')}</span> is registered. Pick one from <a href="index.html">Overview</a> or <a href="instances.html">Instances</a>.</p></div>`;
+    return;
+  }
+  const name = (inst && inst.name) || det.name || ID, role = (inst && inst.role) || (det && det.role) || '';
+  const tone = inst ? inst.tone : '', tag = inst ? inst.tag : ((det && det.enabled === false) ? 'OFF' : 'NOT SCANNED');
+  const items = an.items.filter(it => it.instId === ID);
+  document.title = name + ' · Cloud Agent Monitoring';
+
+  $('#crumbs').innerHTML = `<a href="index.html">Overview</a><span aria-hidden="true">/</span>${inst ? `<span>${esc(inst.group)}</span><span aria-hidden="true">/</span>` : ''}<span style="color:var(--txt)">${esc(name)}</span>`;
+
+  const spec = det && det.spec, ps = spec && spec.provider_status;
+  const chips = [esc(ID), esc(C.roleName(role))].concat(det && det.host ? [esc(det.host)] : [], C.specBits(spec)).map(x => `<span>${x}</span>`).join('')
+    + (ps ? `<span class="${ps === 'Running' ? '' : 'bad'}">provider: ${esc(ps)}</span>` : '');
+  $('#head').innerHTML = `<div class="id">
+      <div class="title">${C.chip(role, tone, 'lg')}<h1>${esc(name)}</h1><span class="tag ${tone}">${esc(tag)}</span></div>
+      <div class="chips">${chips}</div>
+    </div>
+    <div style="display:flex;flex-wrap:wrap;gap:10px">
+      <button type="button" class="btn" id="sendBtn">Send alert email now</button>
+      <a class="btn" href="instances.html">Manage instances</a>
+    </div>`;
+
+  // Open issues on this instance, with the same rows the Overview queue uses.
+  if (!items.some(i => i.key === sel)) sel = items.length ? items[0].key : null;
+  $('#issues').innerHTML = items.length ? `<section class="panel" aria-label="Open issues">
+      <div class="panel-head"><h2>Open on this instance</h2><span class="right mono tiny mut">${items.length} open</span></div>
+      ${items.map(it => `<button type="button" class="trow ${it.tone}" data-item="${esc(it.key)}" aria-pressed="${it.key === sel}">
+        <span class="rank">${it.rank}</span>
+        <span class="body"><span class="line1"><span class="tag ${it.tone}">${it.tag}</span></span><span class="what">${esc(it.what)}</span><span class="why">${esc(it.why)}</span></span>
+        <span class="side"><span class="hint">${it.key === sel ? 'Runbook open' : 'Show runbook'}</span></span>
+      </button>`).join('')}
+    </section>` : '';
+  paintRunbook();
+
+  // Right now.
+  const notes = [];
+  if (!inst) notes.push(det && det.enabled === false ? 'Monitoring is off for this instance, so it is not in the latest scan.' : 'This instance is not in the latest scan yet. It is picked up on the next cycle.');
+  else if (!inst.svcs.length) notes.push(det && det.host ? 'No service probes are defined for this role.' : 'Probes off: no host set for this instance.');
+  if (role === 'rds') notes.push('Managed database. Diagnosed over SQL, there is no shell.');
+  $('#nowPanel').innerHTML = `<div class="panel-head"><h2>Right now</h2>${an.scan ? `<span class="right mono tiny mut">scan ${C.utcClock(C.parseUtc(an.scan.scanned_at))} UTC</span>` : ''}</div>
+    ${inst && inst.metrics.length ? `<div class="rings">${inst.metrics.map(C.ring).join('')}</div>` : ''}
+    ${inst && inst.svcs.length ? `<div class="probes">${inst.svcs.map(C.probe).join('')}</div>` : ''}
+    ${notes.map(t => `<div class="note-line">${esc(t)}</div>`).join('')}`;
+
+  // Docker services: every container, worst first.
+  const list = (det && det.containers) || [], cp = $('#ctrPanel');
+  cp.hidden = !list.length && !(det && det.containers_error);
+  if (!cp.hidden) {
+    const heavy = inst && inst.breaches.length ? C.heaviest(list, inst.breaches[0].label) : null;
+    const sorted = list.slice().sort((a, b) => (C.ctrBad(b) ? 1 : 0) - (C.ctrBad(a) ? 1 : 0) || (b === heavy) - (a === heavy) || (b.cpu_pct || 0) - (a.cpu_pct || 0));
+    const bad = (det && det.containers_attention) || 0;
+    cp.innerHTML = `<div class="panel-head"><h2>Docker services</h2><span class="small mut">${C.plural(list.length, 'container')}${bad ? ', ' + bad + (bad === 1 ? ' needs attention' : ' need attention') : ''}</span><span class="right">${C.sampledAt(det)}</span></div>
+      ${det.containers_error ? `<div class="note-line">${esc(det.containers_error)}</div>` : ''}
+      ${list.length ? `<div class="tablewrap"><table class="t" style="min-width:640px">
+        <thead><tr><th scope="col">Service</th><th scope="col" class="num">CPU</th><th scope="col" class="num">Memory</th><th scope="col">Usage</th><th scope="col">Health</th><th scope="col">Status</th></tr></thead>
+        <tbody>${sorted.map(c => `<tr title="${esc([c.image, c.ports].filter(Boolean).join(' · '))}">
+          <td><span class="mono" style="font-weight:${C.ctrBad(c) || c === heavy ? 600 : 400}">${esc(c.name)}</span>${c === heavy ? ' <span class="tag hot">HEAVIEST</span>' : ''}</td>
+          <td class="num">${C.pct(c.cpu_pct)}</td><td class="num">${C.pct(c.mem_pct)}</td>
+          <td class="num small">${esc(c.mem_usage || '-')}</td>
+          <td><span class="tag ${C.ctrBad(c) ? 'warn' : ''}">${esc((c.health || 'unknown').toUpperCase())}</span></td>
+          <td class="small mut">${esc(c.status || '')}</td></tr>`).join('')}</tbody></table></div>` : ''}`;
+  }
+
+  // Live evidence captured at breach time (SSH, or SQL for a managed database).
+  const ev = C.diagnosticsHtml(an, name, true), ep = $('#evPanel');
+  ep.hidden = !ev;
+  ep.innerHTML = ev ? `<div class="panel-head"><h2>Live evidence</h2><span class="small mut">Captured from the host when the breach was seen.</span></div>${ev}` : '';
+
+  // A new scan means new points: refresh the chart unless a custom window is pinned.
+  const at = an.scan && an.scan.scanned_at;
+  if (at !== lastScanAt) { lastScanAt = at; if (!CH.metric && inst && inst.breaches.length) CH.want = inst.breaches[0].label; if (CH.range !== 'custom') chLoad(); }
+}
+
+function paintRunbook() {
+  const box = $('#runbookBox'), cur = AN && AN.items.find(i => i.key === sel);
+  box.hidden = !cur;
+  box.innerHTML = cur ? C.runbook(cur, AN, { noLink: true }) : '';
+}
+
+/* ===========================================================================
+   History chart
+   Drawn as inline SVG on purpose: no charting library, so nothing is fetched
+   from a CDN this network may not reach. Each point is the WORST value in its
+   bucket, never the mean - averaging hides the short spikes worth finding.
+   =========================================================================== */
+const CH_RANGES = [
+  { k: '1h', label: '1 hour', hours: 1 }, { k: '6h', label: '6 hours', hours: 6 }, { k: '24h', label: '1 day', hours: 24 },
+  { k: '7d', label: '7 days', hours: 168 }, { k: '30d', label: '30 days', hours: 720 }, { k: 'custom', label: 'Custom', hours: null }
+];
+const CH = { range: '6h', from: null, to: null, data: null, metric: null, want: null, busy: false, again: false };
+
+function chRenderRanges() {
+  $('#chRanges').innerHTML = CH_RANGES.map(r => `<button type="button" data-range="${r.k}" aria-pressed="${CH.range === r.k}">${esc(r.label)}</button>`).join('');
+}
+
+// <input type="datetime-local"> speaks local wall-clock with no zone, so round-trip
+// through Date to get the absolute instant the API expects.
+function chLocalInput(d) {
+  const pad = n => String(n).padStart(2, '0');
+  return d.getFullYear() + '-' + pad(d.getMonth() + 1) + '-' + pad(d.getDate()) + 'T' + pad(d.getHours()) + ':' + pad(d.getMinutes());
+}
+
+function chPickRange(key) {
+  CH.range = key;
+  chRenderRanges();
+  if (key === 'custom') {
+    const to = CH.data ? new Date(CH.data.to) : new Date();
+    const from = CH.data ? new Date(CH.data.from) : new Date(Date.now() - 3600e3);
+    $('#chFrom').value = chLocalInput(from);
+    $('#chTo').value = chLocalInput(to);
+    $('#chCustom').hidden = false;
+    return;                          // wait for Apply; do not refetch yet
+  }
+  $('#chCustom').hidden = true;
+  CH.from = CH.to = null;
+  chLoad();
+}
+
+function chApplyCustom() {
+  const f = new Date($('#chFrom').value), t = new Date($('#chTo').value);
+  if (isNaN(f) || isNaN(t)) { C.toast('Pick both a start and an end'); return; }
+  if (f >= t) { C.toast('Start must be before end'); return; }
+  CH.from = f.toISOString(); CH.to = t.toISOString();
+  chLoad();
+}
+
+async function chLoad() {
+  if (!ID) return;
+  if (CH.busy) { CH.again = true; return; }
+  CH.busy = true;
+  try {
+    const q = new URLSearchParams({ instance_id: ID, points: '240' });
+    if (CH.range === 'custom' && CH.from && CH.to) { q.set('from', CH.from); q.set('to', CH.to); }
+    else q.set('hours', String((CH_RANGES.find(r => r.k === CH.range) || { hours: 1 }).hours || 1));
+    const r = await C.api('/api/metrics/history?' + q.toString());
+    if (C.authGuard(r)) return;
+    if (!r.ok) { chFail(); return; }
+    CH.data = await r.json();
+    chDraw();
+  } catch (e) { chFail(); }
+  finally { CH.busy = false; if (CH.again) { CH.again = false; chLoad(); } }
+}
+
+function chFail() {
+  $('#chBody').innerHTML = '<div class="chart-empty">Could not load history.</div>';
+  $('#chStats').innerHTML = ''; $('#chNote').textContent = '';
+}
+
+function chIsOver(s, v) {
+  if (v == null || s.threshold == null) return false;
+  return (s.comparison || '>').indexOf('<') === 0 ? v < s.threshold : v > s.threshold;
+}
+
+function chScale(s) {
+  // Percentages share one 0-100 frame so CPU, memory and disk are comparable at a
+  // glance and a threshold at 80 sits in the same place on each.
+  if ((s.unit || '') === '%') return { lo: 0, hi: 100 };
+  const vals = s.points.map(p => p.v).filter(v => v != null);
+  if (s.threshold != null) vals.push(s.threshold);
+  if (!vals.length) return { lo: 0, hi: 1 };
+  let lo = Math.min.apply(null, vals), hi = Math.max.apply(null, vals);
+  if (hi === lo) hi = lo + 1;
+  const pad = (hi - lo) * 0.1;
+  return { lo: lo - pad, hi: hi + pad };
+}
+
+function chFmtTime(iso, spanHours) {
+  const d = new Date(iso), pad = n => String(n).padStart(2, '0');
+  const hm = pad(d.getHours()) + ':' + pad(d.getMinutes());
+  return spanHours > 48 ? (pad(d.getMonth() + 1) + '/' + pad(d.getDate()) + ' ' + hm) : hm;
+}
+
+function chGeom(w) {
+  const padL = 44, padR = 12, padT = 12, padB = 24, H = 280;
+  return { w: w, H: H, padL: padL, padR: padR, padT: padT, padB: padB, plotW: Math.max(w - padL - padR, 20), plotH: H - padT - padB };
+}
+
+function chSvg(s, g, spanHours) {
+  const n = s.points.length, sc = chScale(s);
+  const X = k => g.padL + (n <= 1 ? g.plotW / 2 : (k / (n - 1)) * g.plotW);
+  const Y = v => g.padT + (1 - (v - sc.lo) / (sc.hi - sc.lo)) * g.plotH;
+  const half = n <= 1 ? g.plotW / 2 : g.plotW / (n - 1) / 2;
+
+  // Shade the stretches that were over the limit, and separately the stretches
+  // with no datapoint - a reporting gap is a hole, never a flat line.
+  let bands = '', d = '', pen = false;
+  const band = (cls, a, b) => {
+    const x0 = Math.max(X(a) - half, g.padL), x1 = Math.min(X(b) + half, g.padL + g.plotW);
+    return `<rect class="${cls}" x="${x0.toFixed(1)}" y="${g.padT}" width="${Math.max(x1 - x0, 1).toFixed(1)}" height="${g.plotH}"></rect>`;
+  };
+  for (let k = 0, run = null; k <= n; k++) {
+    const kind = k < n ? (s.points[k].v == null ? 'gapband' : (chIsOver(s, s.points[k].v) ? 'overband' : null)) : null;
+    if (run && run.kind !== kind) { bands += band(run.kind, run.from, k - 1); run = null; }
+    if (kind && !run) run = { kind: kind, from: k };
+  }
+  for (let k = 0; k < n; k++) {
+    const v = s.points[k].v;
+    if (v == null) { pen = false; continue; }
+    d += (pen ? 'L' : 'M') + X(k).toFixed(1) + ' ' + Y(v).toFixed(1) + ' ';
+    pen = true;
+  }
+
+  const grid = [sc.hi, (sc.hi + sc.lo) / 2, sc.lo].map(v =>
+    `<line class="grid" x1="${g.padL}" y1="${Y(v).toFixed(1)}" x2="${(g.padL + g.plotW).toFixed(1)}" y2="${Y(v).toFixed(1)}"></line>` +
+    `<text class="axis" x="${g.padL - 6}" y="${(Y(v) + 4).toFixed(1)}" text-anchor="end">${v.toFixed(0)}</text>`).join('');
+
+  let thr = '';
+  if (s.threshold != null && s.threshold >= sc.lo && s.threshold <= sc.hi) {
+    const ty = Y(s.threshold).toFixed(1);
+    thr = `<line class="thr" x1="${g.padL}" y1="${ty}" x2="${(g.padL + g.plotW).toFixed(1)}" y2="${ty}"></line>` +
+      `<text class="thrtxt" x="${g.padL + 6}" y="${(Y(s.threshold) - 5).toFixed(1)}" text-anchor="start">alert ${esc(s.comparison || '>')} ${s.threshold}</text>`;
+  }
+
+  const dots = s.points.map((p, k) => (chIsOver(s, p.v) ? `<circle class="over" cx="${X(k).toFixed(1)}" cy="${Y(p.v).toFixed(1)}" r="2.6"></circle>` : '')).join('');
+  const tickIdx = (n > 1 ? [0, Math.floor((n - 1) / 3), Math.floor(2 * (n - 1) / 3), n - 1] : [0]);
+  const ticks = tickIdx.filter((v, idx, arr) => arr.indexOf(v) === idx)
+    .map(k => `<text class="axis" x="${X(k).toFixed(1)}" y="${g.H - 6}" text-anchor="${k === 0 ? 'start' : (k === n - 1 ? 'end' : 'middle')}">${esc(chFmtTime(s.points[k].t, spanHours))}</text>`).join('');
+
+  return `<svg class="chart" role="img" aria-label="${esc(s.label + ' history')}" width="${g.w}" height="${g.H}" viewBox="0 0 ${g.w} ${g.H}">
+    ${bands}${grid}${thr}<path class="line" d="${d.trim()}"></path>${dots}
+    <line class="cursor" x1="0" y1="${g.padT}" x2="0" y2="${g.padT + g.plotH}"></line><circle class="cdot" cx="0" cy="0" r="3.5"></circle>
+    ${ticks}<rect x="${g.padL}" y="${g.padT}" width="${g.plotW}" height="${g.plotH}" fill="transparent"></rect></svg>`;
+}
+
+function chDraw() {
+  const d = CH.data, body = $('#chBody');
+  chRenderRanges();
+  if (!d || !d.series || !d.series.length) {
+    $('#chTabs').innerHTML = ''; $('#chStats').innerHTML = ''; $('#chNote').textContent = '';
+    body.innerHTML = '<div class="chart-empty">No metrics recorded for this instance in that range.</div>';
+    return;
+  }
+  if (CH.want && d.series.some(s => s.label === CH.want)) { CH.metric = CH.want; CH.want = null; }
+  if (!d.series.some(s => s.label === CH.metric)) CH.metric = d.series[0].label;
+  const s = d.series.find(x => x.label === CH.metric);
+  $('#chTabs').innerHTML = d.series.map(x => `<button type="button" data-metric="${esc(x.label)}" aria-pressed="${x.label === CH.metric}">${esc(x.label)}</button>`).join('');
+
+  const vals = s.points.map(p => p.v).filter(v => v != null);
+  const bucket = d.bucket_seconds || 300, bucketMin = Math.max(1, Math.round(bucket / 60));
+  const spanHours = (new Date(d.to) - new Date(d.from)) / 3600e3;
+  if (!vals.length) {
+    body.innerHTML = '<div class="chart-empty">No data in this range. The metric was not reporting.</div>';
+    $('#chStats').innerHTML = '';
+  } else {
+    const g = chGeom(Math.max(body.clientWidth || 820, 320));
+    body.innerHTML = `<div class="chart-wrap">${chSvg(s, g, spanHours)}<div class="chart-tip"></div></div>`;
+    chAttachHover(s, g);
+    const u = s.unit || '', over = s.points.filter(p => chIsOver(s, p.v)).length, gaps = s.points.filter(p => p.v == null).length;
+    const stat = (label, val, tone) => `<div class="stat ${tone || ''}"><span class="eyebrow">${label}</span><b>${esc(val)}</b></div>`;
+    const now = vals[vals.length - 1];
+    $('#chStats').innerHTML = stat('Now', C.num(now) + u, chIsOver(s, now) ? 'hot' : '')
+      + stat('Peak', C.num(Math.max.apply(null, vals)) + u) + stat('Lowest', C.num(Math.min.apply(null, vals)) + u)
+      + stat('Time over limit', over ? C.span(over * bucket * 1000) : 'none', over ? 'hot' : '')
+      + (gaps ? stat('Not reporting', C.span(gaps * bucket * 1000), 'warn') : '');
+  }
+  $('#chNote').textContent = 'Each point is the ' + (s.aggregate === 'min' ? 'lowest' : 'highest') + ' value in a ' + bucketMin +
+    '-minute bucket, not the average: averaging hides the short spikes worth finding. Shaded red is time over the limit, shaded amber is ' +
+    'time with no datapoint. Times on the chart are local. Scans run every ' + d.interval_minutes + ' min; history is kept ' + d.retention_days + ' days.';
+}
+
+function chAttachHover(s, g) {
+  const svg = $('#chBody svg.chart');
+  if (!svg) return;
+  const tip = $('#chBody .chart-tip'), cur = svg.querySelector('.cursor'), dot = svg.querySelector('.cdot');
+  const n = s.points.length, sc = chScale(s);
+  const X = k => g.padL + (n <= 1 ? g.plotW / 2 : (k / (n - 1)) * g.plotW);
+  const Y = v => g.padT + (1 - (v - sc.lo) / (sc.hi - sc.lo)) * g.plotH;
+  svg.addEventListener('mouseleave', () => { cur.style.opacity = 0; dot.style.opacity = 0; tip.style.opacity = 0; });
+  svg.addEventListener('mousemove', ev => {
+    const r = svg.getBoundingClientRect();
+    // The SVG is laid out at 100% width, so map screen px back into user units.
+    const px = (ev.clientX - r.left) * (g.w / Math.max(r.width, 1));
+    let k = n <= 1 ? 0 : Math.round((px - g.padL) / g.plotW * (n - 1));
+    k = Math.min(Math.max(k, 0), n - 1);
+    const p = s.points[k], x = X(k);
+    cur.setAttribute('x1', x); cur.setAttribute('x2', x); cur.style.opacity = .7;
+    if (p.v == null) dot.style.opacity = 0;
+    else { dot.setAttribute('cx', x); dot.setAttribute('cy', Y(p.v)); dot.style.opacity = 1; }
+    tip.innerHTML = `<b>${esc(p.v == null ? 'no data' : p.v + (s.unit || ''))}</b> · ${esc(new Date(p.t).toLocaleString())}`;
+    tip.style.opacity = 1;
+    tip.style.left = Math.min(Math.max((x / g.w) * r.width - 70, 0), Math.max(r.width - 220, 0)) + 'px';
+  });
+}
+
+let chResizeTimer = null;
+window.addEventListener('resize', () => {
+  if (!CH.data) return;
+  clearTimeout(chResizeTimer);
+  chResizeTimer = setTimeout(chDraw, 150);     // SVG px mapping is width-dependent
+});
+
+document.addEventListener('click', ev => {
+  const row = ev.target.closest('.trow[data-item]');
+  if (row) {
+    sel = row.dataset.item;
+    document.querySelectorAll('.trow[data-item]').forEach(r => {
+      r.setAttribute('aria-pressed', String(r.dataset.item === sel));
+      r.querySelector('.hint').textContent = r.dataset.item === sel ? 'Runbook open' : 'Show runbook';
+    });
+    paintRunbook();
+    return;
+  }
+  const m = ev.target.closest('[data-metric]');
+  if (m) { CH.metric = m.dataset.metric; chDraw(); return; }
+  const rg = ev.target.closest('[data-range]');
+  if (rg) { chPickRange(rg.dataset.range); return; }
+  if (ev.target.closest('#chApply')) { chApplyCustom(); return; }
+  const s = ev.target.closest('#sendBtn');
+  if (s) C.sendAlert(s);
+});
+
+chRenderRanges();
+C.start('overview', render);
+</script>
+</body>
+</html>
