@@ -1,40 +1,53 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
 <title>Sign in · Cloud Agent Monitoring</title>
-<style>
-  :root { --bg:#0f1419; --card:#1a2230; --line:#2a3546; --txt:#e6edf3; --mut:#8b98a8; --accent:#3b82f6; }
-  * { box-sizing:border-box; }
-  body { margin:0; background:var(--bg); color:var(--txt); min-height:100vh;
-         display:flex; align-items:center; justify-content:center;
-         font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif; }
-  .card { background:var(--card); border:1px solid var(--line); border-radius:14px;
-          padding:34px 32px; width:360px; max-width:92vw; text-align:center; }
-  h1 { font-size:19px; margin:0 0 6px; }
-  p { color:var(--mut); font-size:13px; line-height:1.5; margin:0 0 22px; }
-  a.btn, button { display:block; width:100%; background:var(--accent); color:#fff; border:0;
-        padding:12px 16px; border-radius:9px; font-size:14px; font-weight:600;
-        cursor:pointer; text-decoration:none; margin-top:10px; }
-  .ghost { background:transparent; border:1px solid var(--line); color:var(--txt); }
-  .divider { color:var(--mut); font-size:11px; text-transform:uppercase; letter-spacing:.5px; margin:18px 0 4px; }
-  .logo { font-size:13px; color:var(--mut); margin-bottom:18px; }
-</style>
+<script>(function(){try{var t=localStorage.getItem('cam-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t)}catch(e){}})()</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" media="print" onload="this.media='all'">
+<link rel="stylesheet" href="app.css?v=20261110b">
 </head>
 <body>
-  <div class="card">
-    <div class="logo">☁ Cloud Agent Monitoring</div>
-    <h1>Sign in required</h1>
-    <p>This dashboard is protected. Sign in through the DWS Hub (single sign-on).</p>
-
-    <a class="btn" id="hubBtn" href="#" style="display:none">Sign in with DWS Hub</a>
-
-    <div id="devWrap" style="display:none">
-      <div class="divider">Local development</div>
-      <a class="btn ghost" id="devBtn" href="#">Continue with dev login</a>
+<div class="login">
+  <section class="login-about" aria-label="About">
+    <div class="top">
+      <span class="brand"><svg aria-hidden="true" width="30" height="30" viewBox="0 0 26 26" fill="none" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round"><path d="M13 2.5 22 7.75v10.5L13 23.5 4 18.25V7.75z"></path><path d="M8 14.5 11 11l3 3.5 4-5"></path></svg>Cloud Agent Monitoring</span>
+      <button type="button" class="btn quiet" id="themeBtn" style="margin-left:auto"></button>
     </div>
-  </div>
+    <div>
+      <h1>Know what broke, and what to run.</h1>
+      <p class="lede">CPU, memory, disk, service probes and containers across your Alibaba Cloud instances, scanned every few minutes and ranked by what needs you first.</p>
+    </div>
+    <div class="login-points">
+      <div><b>01 TRIAGE</b><span>One ranked queue of everything wrong, hidden when nothing is.</span></div>
+      <div><b>02 CAUSE</b><span>The heaviest container and the live evidence, named for you.</span></div>
+      <div><b>03 FIX</b><span>The commands to run, the same ones the alert email carries.</span></div>
+    </div>
+  </section>
+
+  <main class="login-main">
+    <div class="login-card">
+      <div class="block">
+        <span class="eyebrow">Protected dashboard</span>
+        <h2>Sign in</h2>
+        <p style="color:var(--txt-2)">Use your DWS Hub account. You come straight back here once the Hub confirms who you are.</p>
+      </div>
+
+      <a class="btn primary block" id="hubBtn" href="#" style="min-height:52px;font-size:15px" hidden>Sign in with DWS Hub
+        <svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M5 12h14M13 6l6 6-6 6"></path></svg></a>
+
+      <div id="devWrap" style="display:flex;flex-direction:column;gap:14px" hidden>
+        <div class="divider">Local development</div>
+        <a class="btn block" id="devBtn" href="#" style="min-height:48px">Continue with dev login</a>
+      </div>
+
+      <div class="apistate" id="apiState" role="status"><i aria-hidden="true"></i><span>checking the monitoring API</span></div>
+    </div>
+  </main>
+</div>
 
 <script src="config.js"></script>
 <script>
@@ -44,14 +57,34 @@ const API = (window.APP_CONFIG && window.APP_CONFIG.apiBase) || '';
 document.getElementById('hubBtn').href = API + '/auth/oidc/login';
 document.getElementById('devBtn').href = API + '/auth/dev-login';
 
+function apiState(cls, text) {
+  const el = document.getElementById('apiState');
+  el.className = 'apistate ' + cls;
+  el.lastElementChild.textContent = text;
+}
+
 // Show whichever sign-in options the backend has enabled.
-fetch(API + '/auth/info', {credentials:'include'})
-  .then(r => r.ok ? r.json() : {})
+fetch(API + '/auth/info', { credentials: 'include' })
+  .then(r => { if (!r.ok) throw new Error('status ' + r.status); return r.json(); })
   .then(info => {
-    if(info.oidc_enabled){ document.getElementById('hubBtn').style.display='block'; }
-    if(info.dev_login_enabled){ document.getElementById('devWrap').style.display='block'; }
+    document.getElementById('hubBtn').hidden = !info.oidc_enabled;
+    document.getElementById('devWrap').hidden = !info.dev_login_enabled;
+    if (info.oidc_enabled || info.dev_login_enabled) apiState('ok', 'monitoring API reachable');
+    else apiState('bad', 'no sign-in method is enabled on the backend');
   })
-  .catch(()=>{});
+  .catch(() => apiState('bad', 'cannot reach the monitoring API'));
+
+// Theme: same stored choice as the rest of the app (set before paint in <head>).
+const ICON = '<svg aria-hidden="true" width="16" height="16" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2"><circle cx="12" cy="12" r="9"></circle><path d="M12 3a9 9 0 0 0 0 18z" fill="currentColor" stroke="none"></path></svg>';
+const root = document.documentElement, themeBtn = document.getElementById('themeBtn');
+function paintTheme() { themeBtn.innerHTML = ICON + (root.getAttribute('data-theme') === 'light' ? 'Dark theme' : 'Light theme'); }
+themeBtn.addEventListener('click', () => {
+  const next = root.getAttribute('data-theme') === 'light' ? 'dark' : 'light';
+  root.setAttribute('data-theme', next);
+  try { localStorage.setItem('cam-theme', next); } catch (e) { /* lasts for this page only */ }
+  paintTheme();
+});
+paintTheme();
 </script>
 </body>
 </html>

@@ -1,188 +1,182 @@
 <!DOCTYPE html>
-<html lang="en">
+<html lang="en" data-theme="dark">
 <head>
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Register Instance · Cloud Agent Monitoring</title>
-<style>
-  :root { --bg:#0f1419; --card:#1a2230; --line:#2a3546; --txt:#e6edf3; --mut:#8b98a8;
-          --ok:#27ae60; --bad:#e74c3c; --warn:#e0a800; --accent:#3b82f6; }
-  * { box-sizing:border-box; }
-  body { margin:0; background:var(--bg); color:var(--txt);
-         font-family:-apple-system,Segoe UI,Roboto,Arial,sans-serif; }
-  header { padding:20px 28px; border-bottom:1px solid var(--line);
-           display:flex; align-items:center; justify-content:space-between; flex-wrap:wrap; gap:12px; }
-  h1 { font-size:18px; margin:0; }
-  .sub { color:var(--mut); font-size:13px; margin-top:4px; }
-  a { color:var(--accent); text-decoration:none; }
-  .wrap { padding:24px 28px; max-width:1000px; margin:auto; }
-  .panel { background:var(--card); border:1px solid var(--line); border-radius:12px; padding:18px 20px; margin-bottom:20px; }
-  .panel h2 { font-size:15px; margin:0 0 14px; }
-  form { display:grid; grid-template-columns:repeat(auto-fit,minmax(220px,1fr)); gap:14px; align-items:end; }
-  label { display:block; font-size:12px; color:var(--mut); margin-bottom:5px; text-transform:uppercase; letter-spacing:.4px; }
-  input, select { width:100%; background:var(--bg); border:1px solid var(--line); color:var(--txt);
-                  border-radius:8px; padding:9px 11px; font-size:14px; }
-  input:focus, select:focus { outline:none; border-color:var(--accent); }
-  .actions { grid-column:1/-1; display:flex; gap:10px; align-items:center; }
-  button { background:var(--accent); color:#fff; border:0; padding:10px 16px; border-radius:8px;
-           font-size:14px; cursor:pointer; font-weight:600; }
-  button.ghost { background:transparent; border:1px solid var(--line); color:var(--txt); }
-  button.danger { background:transparent; border:1px solid var(--bad); color:var(--bad); padding:5px 10px; font-size:12px; }
-  button.toggle { background:transparent; border:1px solid var(--line); color:var(--txt); padding:5px 10px; font-size:12px; }
-  button:disabled { opacity:.5; cursor:not-allowed; }
-  table { width:100%; border-collapse:collapse; font-size:13px; }
-  th,td { text-align:left; padding:8px 10px; border-bottom:1px solid var(--line); }
-  th { color:var(--mut); font-weight:600; font-size:11px; text-transform:uppercase; }
-  td.mono { font-family:ui-monospace,Menlo,monospace; font-size:12px; color:var(--mut); }
-  .tag { font-size:11px; padding:2px 9px; border-radius:999px; font-weight:700; }
-  .tag.on { background:rgba(39,174,96,.15); color:var(--ok); }
-  .tag.off { background:rgba(139,152,168,.15); color:var(--mut); }
-  .hint { font-size:12px; color:var(--mut); margin-top:4px; }
-  #msg { font-size:13px; }
-  #msg.ok { color:var(--ok); } #msg.err { color:var(--bad); }
-  .muted { color:var(--mut); font-size:13px; }
-</style>
+<title>Instances · Cloud Agent Monitoring</title>
+<script>(function(){try{var t=localStorage.getItem('cam-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t)}catch(e){}})()</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" media="print" onload="this.media='all'">
+<link rel="stylesheet" href="app.css?v=20261110b">
 </head>
 <body>
-<header>
-  <div>
-    <h1>Register Instance</h1>
-    <div class="sub">Add an ECS instance to monitor &middot; picked up on the next scan</div>
+<header class="topbar" id="topbar"></header>
+<main class="main" id="app" style="gap:24px">
+  <div class="page-head"><h1>Instances</h1><p id="lede">Loading&hellip;</p></div>
+  <section class="tiles" id="tiles" aria-label="Fleet by role"></section>
+  <div class="split">
+    <section class="panel col-a" aria-label="Monitored instances" style="gap:14px">
+      <div class="panel-head" style="align-items:center">
+        <h2>Inventory</h2>
+        <div class="field right"><label for="q" class="tiny mut" style="font-weight:400">Find an instance</label>
+          <input class="input" id="q" type="search" placeholder="name, id or host" style="width:240px;max-width:100%"></div>
+      </div>
+      <div class="tablewrap"><table class="t" style="min-width:720px">
+        <thead><tr><th scope="col">Instance</th><th scope="col">State</th><th scope="col">Host</th><th scope="col">Monitoring</th>
+          <th scope="col"><span style="position:absolute;width:1px;height:1px;overflow:hidden;clip-path:inset(50%)">Actions</span></th></tr></thead>
+        <tbody id="rows"><tr><td colspan="5" class="mut">Loading&hellip;</td></tr></tbody>
+      </table></div>
+    </section>
+    <section class="panel col-b" aria-label="Add an instance" style="gap:16px">
+      <div class="panel-head"><h2>Add an instance</h2></div>
+      <p class="small mut">It is picked up on the next scan. Nothing needs restarting.</p>
+      <form id="addForm" autocomplete="off" style="display:flex;flex-direction:column;gap:14px">
+        <div class="field"><label for="f-id">Instance ID</label>
+          <input class="input mono" id="f-id" name="id" placeholder="i-xxxxxxxxxxxxxxxxxxxx" required>
+          <span class="hint">ECS ids start with i-. ApsaraDB ids start with pgm- or rm- and are scanned as a managed database.</span></div>
+        <div class="field"><label for="f-name">Display name</label>
+          <input class="input" id="f-name" name="name" placeholder="Backend Production" required></div>
+        <div class="field"><label for="f-role">Role</label>
+          <select class="input" id="f-role" name="role" required></select>
+          <span class="hint">The role selects the default TCP and HTTP service checks.</span></div>
+        <div class="field"><label for="f-host">Host (IP or DNS name)</label>
+          <input class="input mono" id="f-host" name="host" placeholder="172.16.0.10">
+          <span class="hint">Leave blank to skip service probes and rely on metrics alone.</span></div>
+        <div class="field"><label for="f-group">Group</label>
+          <select class="input" id="f-group" name="group_id"></select></div>
+        <div class="field" id="newGroupWrap" hidden><label for="f-newgroup">New group name</label>
+          <input class="input" id="f-newgroup" name="group_name" placeholder="Production"></div>
+        <button type="submit" class="btn primary" id="addBtn">Add instance</button>
+        <div class="msg" id="msg" role="status"></div>
+      </form>
+    </section>
   </div>
-  <div><a href="index.html">&larr; Back to dashboard</a></div>
-</header>
-
-<div class="wrap">
-  <div class="panel">
-    <h2>New instance</h2>
-    <form id="addForm" autocomplete="off">
-      <div>
-        <label for="f-id">ECS Instance ID</label>
-        <input id="f-id" name="id" placeholder="i-xxxxxxxxxxxxxxxxxxxx" required>
-      </div>
-      <div>
-        <label for="f-name">Display name</label>
-        <input id="f-name" name="name" placeholder="Backend Production" required>
-      </div>
-      <div>
-        <label for="f-role">Role</label>
-        <select id="f-role" name="role" required></select>
-        <div class="hint">Role selects the default TCP/HTTP service checks.</div>
-      </div>
-      <div>
-        <label for="f-host">Host (IP / DNS)</label>
-        <input id="f-host" name="host" placeholder="leave blank to skip probes">
-      </div>
-      <div>
-        <label for="f-group">Group</label>
-        <select id="f-group" name="group_id"></select>
-      </div>
-      <div id="newGroupWrap" style="display:none">
-        <label for="f-newgroup">New group name</label>
-        <input id="f-newgroup" name="group_name" placeholder="e.g. Production">
-      </div>
-      <div class="actions">
-        <button type="submit" id="addBtn">Add instance</button>
-        <span id="msg"></span>
-      </div>
-    </form>
-  </div>
-
-  <div class="panel">
-    <h2>Monitored instances (<span id="count">0</span>)</h2>
-    <table>
-      <thead><tr><th>Name</th><th>Instance ID</th><th>Role</th><th>Host</th><th>Group</th><th>Status</th><th></th></tr></thead>
-      <tbody id="rows"><tr><td colspan="7" class="muted">Loading…</td></tr></tbody>
-    </table>
-  </div>
-</div>
+</main>
+<div id="toast" role="status" aria-live="polite"></div>
 
 <script src="config.js"></script>
+<script src="app.js?v=20261110b"></script>
 <script>
-const $ = s => document.querySelector(s);
-const API = (window.APP_CONFIG && window.APP_CONFIG.apiBase) || '';
-let CSRF = null;
+/* Inventory: what is monitored, and adding to it. The State column is the same
+   answer the Overview gives (CAM analyse), so a row here never disagrees with a
+   card there. */
+const C = window.CAM, $ = C.$, esc = C.esc;
+let AN = null, LIST = null, q = '';
 
-function api(path, opts){ opts = opts || {}; opts.credentials = 'include'; return fetch(API + path, opts); }
-async function loadCsrf(){
-  try{ const r = await api('/api/csrf'); if(r.ok){ CSRF = (await r.json()).csrf_token; } }catch(e){}
+function msg(text, ok) {
+  const m = $('#msg');
+  m.textContent = text; m.className = 'msg ' + (ok ? 'ok' : 'err');
+  if (text) setTimeout(() => { if (m.textContent === text) m.textContent = ''; }, 4000);
 }
-function headers(){
-  const h = {'Content-Type':'application/json'};
-  if(CSRF) h['X-CSRFToken'] = CSRF;
-  return h;
-}
-function esc(s){ return (s==null?'':String(s)).replace(/[&<>"]/g,c=>({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;'}[c])); }
-function msg(text, ok){ const m=$('#msg'); m.textContent=text; m.className=ok?'ok':'err';
-  if(text) setTimeout(()=>{ if(m.textContent===text){ m.textContent=''; } }, 4000); }
-function authGuard(r){ if(r.status===401){ window.location='login.html'; return true; } return false; }
 
-async function loadMeta(){
-  const r = await api('/api/instances/meta'); if(authGuard(r)) return;
+function stateOf(i) {
+  if (!i.enabled) return ['OFF', '', 'off'];
+  const live = AN && AN.insts[i.id];
+  if (!live) return ['NEXT SCAN', '', ''];          // registered, not in a scan yet
+  return [live.tag, live.tone, live.tone];
+}
+
+function paint() {
+  if (!LIST) return;
+  const on = LIST.filter(i => i.enabled).length;
+  $('#lede').textContent = LIST.length + ' registered, ' + on + ' monitored. Changes apply on the next scan.';
+
+  const counts = {};
+  LIST.forEach(i => { counts[i.role] = (counts[i.role] || 0) + 1; });
+  const order = ['frontend', 'backend', 'db', 'rds', 'web', 'mail', 'router'];
+  const roles = Object.keys(counts).sort((a, b) => (order.indexOf(a) < 0 ? 99 : order.indexOf(a)) - (order.indexOf(b) < 0 ? 99 : order.indexOf(b)) || a.localeCompare(b));
+  $('#tiles').innerHTML = roles.map(r => `<div class="tile">${C.chip(r, '')}<span><b>${counts[r]}</b><span>${esc(C.roleName(r))}</span></span></div>`).join('');
+
+  const needle = q.trim().toLowerCase();
+  const shown = LIST.filter(i => !needle || [i.name, i.id, i.host, i.role, i.group].some(v => (v || '').toLowerCase().includes(needle)));
+  if (!shown.length) {
+    $('#rows').innerHTML = `<tr><td colspan="5" class="mut">${LIST.length ? 'Nothing matches that search.' : 'No instances yet. Add the first one on the right.'}</td></tr>`;
+    return;
+  }
+  const groups = [], gmap = {};
+  shown.forEach(i => { const k = i.group || 'Ungrouped'; if (!gmap[k]) { gmap[k] = []; groups.push(k); } gmap[k].push(i); });
+  $('#rows').innerHTML = groups.map(g => `<tr class="grp"><th scope="colgroup" colspan="5">${esc(g)}<span>${C.plural(gmap[g].length, 'instance')}</span></th></tr>` +
+    gmap[g].map(i => {
+      const st = stateOf(i);
+      return `<tr>
+        <td><span class="who">${C.chip(i.role, st[2], 'sm')}<span><a href="instance.html?id=${encodeURIComponent(i.id)}">${esc(i.name)}</a><span>${esc(i.id)} · ${esc(i.role)}</span></span></span></td>
+        <td><span class="tag ${st[1]}">${esc(st[0])}</span></td>
+        <td class="num small" style="max-width:240px;overflow-wrap:anywhere">${i.host ? esc(i.host) : '<span class="mut">no host</span>'}</td>
+        <td><button type="button" class="switch" role="switch" aria-checked="${!!i.enabled}" data-toggle="${esc(i.id)}" aria-label="Monitoring for ${esc(i.name)}"><i aria-hidden="true"></i>${i.enabled ? 'On' : 'Off'}</button></td>
+        <td style="text-align:right"><button type="button" class="btn quiet danger" data-del="${esc(i.id)}" data-name="${esc(i.name)}">Delete</button></td>
+      </tr>`;
+    }).join('')).join('');
+}
+
+async function loadMeta() {
+  const r = await C.api('/api/instances/meta');
+  if (C.authGuard(r) || !r.ok) return;
   const meta = await r.json();
-  $('#f-role').innerHTML = meta.roles.map(x=>`<option value="${esc(x)}">${esc(x)}</option>`).join('');
-  $('#f-group').innerHTML =
-    meta.groups.map(g=>`<option value="${g.id}">${esc(g.name)}</option>`).join('')
-    + '<option value="__new__">+ New group…</option>';
+  $('#f-role').innerHTML = meta.roles.map(x => `<option value="${esc(x)}">${esc(x)}</option>`).join('');
+  $('#f-group').innerHTML = meta.groups.map(g => `<option value="${esc(g.id)}">${esc(g.name)}</option>`).join('') + '<option value="__new__">+ New group…</option>';
+  $('#newGroupWrap').hidden = $('#f-group').value !== '__new__';
 }
 
-async function load(){
-  const r = await api('/api/instances'); if(authGuard(r)) return;
-  const list = await r.json();
-  $('#count').textContent = list.length;
-  const b = $('#rows');
-  if(!list.length){ b.innerHTML='<tr><td colspan="7" class="muted">No instances yet.</td></tr>'; return; }
-  b.innerHTML = list.map(i=>`<tr>
-    <td>${esc(i.name)}</td>
-    <td class="mono">${esc(i.id)}</td>
-    <td>${esc(i.role)}</td>
-    <td class="mono">${esc(i.host)||'<span class="muted">—</span>'}</td>
-    <td>${esc(i.group)}</td>
-    <td><span class="tag ${i.enabled?'on':'off'}">${i.enabled?'enabled':'disabled'}</span></td>
-    <td style="white-space:nowrap">
-      <button class="toggle" onclick="toggle('${esc(i.id)}', ${!i.enabled})">${i.enabled?'Disable':'Enable'}</button>
-      <button class="danger" onclick="remove('${esc(i.id)}','${esc(i.name)}')">Delete</button>
-    </td></tr>`).join('');
+async function load() {
+  const r = await C.api('/api/instances');
+  if (C.authGuard(r)) return;
+  if (!r.ok) { $('#rows').innerHTML = '<tr><td colspan="5" class="mut">Could not load the inventory.</td></tr>'; return; }
+  LIST = await r.json();
+  paint();
 }
 
-$('#f-group').addEventListener('change', e=>{
-  $('#newGroupWrap').style.display = e.target.value==='__new__' ? 'block' : 'none';
-});
+function jsonHeaders() { return C.postHeaders(true); }
 
-$('#addForm').addEventListener('submit', async e=>{
+$('#q').addEventListener('input', e => { q = e.target.value; paint(); });
+$('#f-group').addEventListener('change', e => { $('#newGroupWrap').hidden = e.target.value !== '__new__'; });
+
+$('#addForm').addEventListener('submit', async e => {
   e.preventDefault();
   $('#addBtn').disabled = true;
-  const body = {
-    id: $('#f-id').value.trim(),
-    name: $('#f-name').value.trim(),
-    role: $('#f-role').value,
-    host: $('#f-host').value.trim(),
-  };
-  if($('#f-group').value==='__new__') body.group_name = $('#f-newgroup').value.trim();
+  const body = { id: $('#f-id').value.trim(), name: $('#f-name').value.trim(), role: $('#f-role').value, host: $('#f-host').value.trim() };
+  if ($('#f-group').value === '__new__') body.group_name = $('#f-newgroup').value.trim();
   else body.group_id = $('#f-group').value;
-  try{
-    const r = await api('/api/instances', {method:'POST', headers:headers(), body:JSON.stringify(body)});
-    if(authGuard(r)) return;
-    const data = await r.json();
-    if(r.ok){ msg('Added '+data.name, true); $('#addForm').reset(); $('#newGroupWrap').style.display='none'; await loadMeta(); await load(); }
-    else msg(data.error || 'Failed to add', false);
-  }catch(err){ msg('Network error', false); }
-  finally{ $('#addBtn').disabled=false; }
+  try {
+    const r = await C.api('/api/instances', { method: 'POST', headers: jsonHeaders(), body: JSON.stringify(body) });
+    if (C.authGuard(r)) return;
+    const data = await r.json().catch(() => ({}));
+    if (r.ok) { msg('Added ' + data.name, true); $('#addForm').reset(); await loadMeta(); await load(); }
+    else msg(data.error || 'Could not add the instance', false);
+  } catch (err) { msg('The API did not answer', false); }
+  finally { $('#addBtn').disabled = false; }
 });
 
-async function toggle(id, enabled){
-  const r = await api('/api/instances/'+encodeURIComponent(id), {method:'PATCH', headers:headers(), body:JSON.stringify({enabled})});
-  if(authGuard(r)) return;
-  await load();
-}
-async function remove(id, name){
-  if(!confirm('Delete '+name+' ('+id+')? This removes it from monitoring.')) return;
-  const r = await api('/api/instances/'+encodeURIComponent(id), {method:'DELETE', headers:headers()});
-  if(authGuard(r)) return;
-  await load();
-}
+document.addEventListener('click', async ev => {
+  const t = ev.target.closest('[data-toggle]');
+  if (t) {
+    const id = t.dataset.toggle, next = t.getAttribute('aria-checked') !== 'true';
+    t.disabled = true;
+    try {
+      const r = await C.api('/api/instances/' + encodeURIComponent(id), { method: 'PATCH', headers: jsonHeaders(), body: JSON.stringify({ enabled: next }) });
+      if (C.authGuard(r)) return;
+      if (!r.ok) C.toast('Could not change monitoring for that instance');
+    } catch (e) { C.toast('The API did not answer'); }
+    await load();
+    return;
+  }
+  const d = ev.target.closest('[data-del]');
+  if (d) {
+    if (!confirm('Delete ' + d.dataset.name + ' (' + d.dataset.del + ')? This removes it from monitoring.')) return;
+    try {
+      const r = await C.api('/api/instances/' + encodeURIComponent(d.dataset.del), { method: 'DELETE', headers: jsonHeaders() });
+      if (C.authGuard(r)) return;
+      if (!r.ok) C.toast('Could not delete that instance');
+    } catch (e) { C.toast('The API did not answer'); }
+    await load();
+  }
+});
 
-(async ()=>{ await loadCsrf(); await loadMeta(); await load(); })();
+// The inventory does not wait for the status call: the table appears as soon as
+// its own request answers, and the State column fills in when the scan arrives.
+C.start('instances', an => { AN = an; paint(); });
+loadMeta();
+load();
 </script>
 </body>
 </html>

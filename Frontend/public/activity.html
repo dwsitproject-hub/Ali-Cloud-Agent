@@ -1,0 +1,98 @@
+<!DOCTYPE html>
+<html lang="en" data-theme="dark">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Activity · Cloud Agent Monitoring</title>
+<script>(function(){try{var t=localStorage.getItem('cam-theme');if(t==='light'||t==='dark')document.documentElement.setAttribute('data-theme',t)}catch(e){}})()</script>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" media="print" onload="this.media='all'">
+<link rel="stylesheet" href="app.css?v=20261110b">
+</head>
+<body>
+<header class="topbar" id="topbar"></header>
+<main class="main" id="app" style="gap:24px">
+  <div class="page-head"><h1>Activity</h1><p>What each scan found, and what was emailed about it.</p></div>
+  <div class="split">
+    <div class="col-a">
+      <section class="panel" id="stripPanel" aria-label="Recent scans at a glance"></section>
+      <section class="panel" id="scansPanel" aria-label="Recent scans"></section>
+    </div>
+    <div class="col-b">
+      <section class="panel" id="alertPanel" aria-label="Last alert"></section>
+      <section class="panel" id="rulesPanel" aria-label="How alerting is set"></section>
+    </div>
+  </div>
+</main>
+<div id="toast" role="status" aria-live="polite"></div>
+
+<script src="config.js"></script>
+<script src="app.js?v=20261110b"></script>
+<script>
+/* Activity: the scan log and the last alert. Kept off the Overview so that page
+   can stay about what is wrong right now. */
+const C = window.CAM, $ = C.$, esc = C.esc;
+
+function render(an) {
+  const hist = an.history || [];            // newest first, as the API returns it
+
+  const old = hist.slice().reverse();
+  const withBreach = hist.filter(h => h.breach_count > 0).length;
+  $('#stripPanel').innerHTML = `<div class="panel-head"><h2>Last ${hist.length || ''} scans</h2>
+      <span class="small mut">${hist.length ? (withBreach ? C.plural(withBreach, 'scan') + ' found a breach' : 'no breach in any of them') : 'no scans recorded yet'}</span></div>
+    ${hist.length ? `<div class="scanstrip" role="img" aria-label="${esc(C.plural(withBreach, 'scan') + ' of ' + hist.length + ' found a breach')}">${
+      old.map(h => `<i class="${h.breach_count > 0 ? 'hot' : ''}" title="${esc(C.utcStamp(h.scanned_at) + ' UTC - ' + C.plural(h.breach_count, 'breach', 'breaches'))}"></i>`).join('')}</div>
+      <div class="legend" style="margin-left:0"><span>oldest on the left</span><span><i class="hot" aria-hidden="true"></i>a threshold was breached</span><span><i aria-hidden="true"></i>clear</span></div>` : ''}`;
+
+  $('#scansPanel').innerHTML = `<div class="panel-head"><h2>Recent scans</h2><span class="small mut">Every ${esc(an.config.interval_minutes || '-')} minutes. Times are UTC.</span></div>
+    <div class="tablewrap"><table class="t" style="min-width:520px">
+      <thead><tr><th scope="col">Time (UTC)</th><th scope="col">Result</th><th scope="col" class="num">Breaches</th><th scope="col" class="num">Metrics</th><th scope="col">Mode</th></tr></thead>
+      <tbody>${hist.length ? hist.map(h => `<tr>
+        <td class="num">${esc(C.utcStamp(h.scanned_at))}</td>
+        <td><span class="tag ${h.breach_count > 0 ? 'hot' : ''}">${h.breach_count > 0 ? 'BREACH' : 'CLEAR'}</span></td>
+        <td class="num" style="${h.breach_count > 0 ? 'color:var(--hot);font-weight:600' : 'color:var(--mut)'}">${esc(h.breach_count)}</td>
+        <td class="num">${esc(h.total)}</td>
+        <td class="small mut">${esc(h.mode || '')}</td></tr>`).join('') : '<tr><td colspan="5" class="mut">No scans recorded yet.</td></tr>'}</tbody>
+    </table></div>`;
+
+  const a = an.alert;
+  const kv = (k, v) => `<div><span class="k">${k}</span><span class="v" style="text-align:left">${v}</span></div>`;
+  $('#alertPanel').innerHTML = `<div class="panel-head"><h2>Last alert</h2>${a ? `<span class="tag ${a.sent ? 'calm' : 'warn'}">${a.sent ? 'SENT' : 'NOT SENT'}</span>` : ''}</div>
+    ${a ? `<div class="kv">
+        ${kv('subject', esc(a.subject || '(no subject)'))}
+        ${kv('to', esc((a.recipients || []).join(', ') || '-'))}
+        ${kv('when', esc(C.utcStamp(a.sent_at)) + ' UTC')}
+        ${kv('trigger', esc(a.trigger || '-'))}
+        ${a.sent ? '' : kv('reason', esc(a.reason || 'not sent'))}
+      </div>
+      ${a.preview_html ? '<h3 class="cap">Email preview</h3><iframe class="preview" id="preview" title="Alert email preview" sandbox=""></iframe>' : ''}`
+      : '<p class="small mut">No alert has been sent yet.</p>'}
+    <div style="display:flex;flex-wrap:wrap;gap:10px"><button type="button" class="btn" id="sendBtn">Send alert email now</button></div>
+    <p class="tiny mut">Sends the latest scan to the recipients below, whether or not anything is breached.</p>`;
+  // The preview is the email's own HTML. It goes into a sandboxed frame so it
+  // cannot run script or reach this page.
+  const frame = $('#preview');
+  if (frame) frame.srcdoc = a.preview_html;
+
+  const cfg = an.config, rec = cfg.recipients;
+  const who = Array.isArray(rec) ? rec.join(', ') : (rec || '');
+  $('#rulesPanel').innerHTML = `<div class="panel-head"><h2>How alerting is set</h2></div>
+    <div class="kv">
+      ${kv('auto-alert', cfg.auto_alert_on_breach ? 'on: a breach or an outage sends an email' : 'off: emails are sent only by hand')}
+      ${kv('scan every', esc(cfg.interval_minutes || '-') + ' min')}
+      ${kv('recipients', esc(who || 'none configured'))}
+      ${kv('mode', cfg.mode === 'mock' ? 'mock: synthetic metrics, no email leaves' : 'live')}
+    </div>
+    <p class="tiny mut">These come from the backend's environment. Change them there, not here.</p>`;
+}
+
+document.addEventListener('click', ev => {
+  const s = ev.target.closest('#sendBtn');
+  if (s) C.sendAlert(s);
+});
+
+C.start('activity', render);
+</script>
+</body>
+</html>

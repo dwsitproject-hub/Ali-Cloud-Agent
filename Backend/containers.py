@@ -82,6 +82,22 @@ def _pct(raw: str):
         return None
 
 
+# Below this share a container is not an explanation for a host breach. Without a
+# floor, a ranking of containers that ALL read 0.0% still has a first row, and the
+# email and dashboard presented it as "the heaviest" - sending the reader to an
+# idle service. That happens whenever the load is somewhere `docker stats` cannot
+# see: an image build or a restart loop (both run in the daemon), a process on the
+# host itself, or a spike that ended before the sample. The frontend keeps the
+# same number (NEGLIGIBLE_PCT in app.js).
+NEGLIGIBLE_PCT = 5.0
+
+
+def stands_out(rows: list, by: str = "cpu") -> bool:
+    """True when at least one container is busy enough to be worth naming."""
+    key = "cpu_pct" if by == "cpu" else "mem_pct"
+    return any((r.get(key) or 0.0) >= NEGLIGIBLE_PCT for r in rows)
+
+
 def top_consumers(rows: list, by: str = "cpu", limit: int = 5) -> list:
     """The heaviest containers by ``cpu`` or ``mem``, biggest first.
 
