@@ -204,7 +204,11 @@ are not duplicated onto every metric row and every history entry.
   panel with `containers_updated_at` (`sampledAt()` in `app.js`). Note also
   that a container in a **restart loop** burns host CPU that no container can be
   charged for - the work happens in the daemon, and the container is rarely
-  running when `docker stats` samples it.
+  running when `docker stats` samples it. For the same reason a container is only
+  named as the cause when it reads at least `NEGLIGIBLE_PCT` (5%, in both
+  `containers.py` and `app.js`): a ranking of containers that all read 0.0% still
+  has a first row, and it used to be shown as "the heaviest" - on a breach whose
+  load was an image build, which no container is charged for either.
 - Keep the scheduler to ONE process (single APScheduler). State is now in
   Postgres, but the scheduler must still be single; run gunicorn `--workers 1`.
 - The scheduler's background scan + the immediate first scan run inside an
