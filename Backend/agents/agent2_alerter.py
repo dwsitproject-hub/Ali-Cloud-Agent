@@ -388,6 +388,48 @@ def _diagnosis_section(scan: dict) -> str:
     )
 
 
+def _broken_containers_section(broken) -> str:
+    """Name the containers docker itself calls broken.
+
+    A port probe cannot see this: `pct-api` kept its published port bound while
+    its process sat wedged, so the socket was there and nothing answered. docker
+    knew - the healthcheck had failed 578 times - and that verdict used to reach
+    the dashboard but not the email.
+
+    Only states that mean broken appear here (CONTAINER_ALERT_STATES); a stopped
+    migration job is not an incident.
+    """
+    if not broken:
+        return ""
+    rows = "".join(
+        "<tr>"
+        "<td style='padding:6px 10px'>%s</td>"
+        "<td style='padding:6px 10px'><code>%s</code></td>"
+        "<td style='padding:6px 10px;color:#c0392b;font-weight:600'>%s</td>"
+        "<td style='padding:6px 10px;color:#555'>%s</td>"
+        "</tr>" % (html.escape(c.get("instance_name") or ""),
+                   html.escape(c.get("name") or ""),
+                   html.escape(c.get("health") or ""),
+                   html.escape(c.get("status") or ""))
+        for c in broken)
+    return (
+        "<h3 style='font-size:14px;color:#2c3e50;margin:18px 0 6px'>"
+        "Containers docker reports as broken</h3>"
+        "<div style='font-size:12px;color:#555;margin-bottom:6px'>"
+        "docker's own healthcheck verdict, which a port probe cannot see - a "
+        "wedged process keeps its port bound and answers nothing. Sampled on the "
+        "previous cycle.</div>"
+        "<table style='border-collapse:collapse;width:100%%;font-size:13px'>"
+        "<thead><tr style='text-align:left;color:#888;font-size:12px;"
+        "text-transform:uppercase'>"
+        "<th style='padding:6px 10px'>Instance</th>"
+        "<th style='padding:6px 10px'>Container</th>"
+        "<th style='padding:6px 10px'>State</th>"
+        "<th style='padding:6px 10px'>Status</th></tr></thead>"
+        "<tbody>%s</tbody></table>" % rows
+    )
+
+
 def _gap_section(gap) -> str:
     """Say plainly that there is a window with no observations.
 
@@ -426,9 +468,11 @@ def build_email(scan: dict) -> dict:
     stopped = scan.get("stopped_reporting", [])
     n_stopped = len(stopped)
     gap = scan.get("monitoring_gap")
+    broken = scan.get("container_problems", []) or []
+    n_broken = len(broken)
     when = scan.get("scanned_at", datetime.now(timezone.utc).isoformat())
 
-    if n_breach or n_down or n_stopped or gap:
+    if n_breach or n_down or n_stopped or gap or n_broken:
         parts = []
         if gap:
             # First in the subject: it qualifies everything else in the email.
@@ -441,6 +485,8 @@ def build_email(scan: dict) -> dict:
             parts.append(f"{n_down} service{'s' if n_down != 1 else ''} down")
         if n_stopped:
             parts.append(f"{n_stopped} metric{'s' if n_stopped != 1 else ''} stopped reporting")
+        if n_broken:
+            parts.append(f"{n_broken} container{'s' if n_broken != 1 else ''} broken")
         subject = "[CloudMonitor] " + ", ".join(parts)
         status_color = "#c0392b"
         status_text = " & ".join(parts) + " detected"
@@ -449,7 +495,7 @@ def build_email(scan: dict) -> dict:
         status_color = "#27ae60"
         status_text = "All clear - metrics within thresholds, services up"
 
-    gap_html = _gap_section(gap)
+    gap_html = _gap_section(gap) + _broken_containers_section(broken)
     metric_rows = _metrics_rows(scan.get("results", []))
     services_html = _services_section(services_down) + _stopped_section(stopped)
     diagnosis_html = (_top_consumers_section(scan) + _evidence_section(scan)

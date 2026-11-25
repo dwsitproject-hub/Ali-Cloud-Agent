@@ -341,6 +341,50 @@ def refresh() -> int:
     return collected
 
 
+def problem_key(instance_id: str, name: str) -> str:
+    """Stable key for one container, used by the alerting hysteresis.
+
+    Keyed on the container, NOT on its health: a service flipping between
+    `unhealthy` and `restarting` is one ongoing problem, and including the state
+    would make each flip read as a new one.
+    """
+    return "ctr:%s:%s" % (instance_id, name)
+
+
+def problems() -> list:
+    """Containers docker currently calls broken, across every enabled instance.
+
+    ``[{key, instance_id, instance_name, name, health, status, image}]``.
+    Returns [] when the feature is off. Must run inside a Flask app context.
+
+    Reads `Instance.containers_json`, which holds what the LAST completed
+    collection found - containers.refresh() runs after the scan is persisted, so
+    these are one cycle behind, exactly like for_alert()'s figures.
+    """
+    if not config.ALERT_ON_CONTAINER_HEALTH:
+        return []
+
+    from models import Instance
+
+    states = set(config.CONTAINER_ALERT_STATES)
+    out = []
+    for inst in Instance.query.filter_by(enabled=True).all():
+        for c in (inst.containers_json or []):
+            health = (c.get("health") or "").strip().lower()
+            if health in states:
+                out.append({
+                    "key": problem_key(inst.id, c.get("name") or "?"),
+                    "instance_id": inst.id,
+                    "instance_name": inst.name,
+                    "name": c.get("name") or "?",
+                    "image": c.get("image") or "",
+                    "health": health,
+                    "status": c.get("status") or "",
+                })
+    out.sort(key=lambda r: (r["instance_name"], r["name"]))
+    return out
+
+
 def for_alert(scan: dict) -> dict:
     """Top CPU/memory consumers on the instances implicated in this scan.
 

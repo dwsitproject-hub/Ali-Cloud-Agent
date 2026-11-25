@@ -11,11 +11,14 @@ the scheduler's background job pushes one - see scheduler._scan_job).
 """
 from __future__ import annotations
 
+import logging
 from datetime import datetime, timedelta, timezone
 
 import config
 from db import db
 from models import Alert, MetricResult, ScanRun, ServiceResult
+
+log = logging.getLogger("state")
 
 HISTORY_LIMIT = 50
 
@@ -23,6 +26,14 @@ HISTORY_LIMIT = 50
 # --- persist ----------------------------------------------------------------
 def set_last_scan(scan: dict) -> None:
     """Persist a scan document (metrics + services) as a ScanRun + child rows."""
+    # Snapshot docker's verdict WITH the run, so alerting.decide() can confirm a
+    # broken container across consecutive scans and declare recovery the same way
+    # it does for a metric. One cycle behind by construction: containers.refresh()
+    # runs after this, so these are the previous collection's findings - the same
+    # figures for_alert() reports, and the same reason it is honest about them.
+    problems = container_problems()
+    scan["container_problems"] = problems
+
     run = ScanRun(
         scanned_at=scan.get("scanned_at", ""),
         mode=scan.get("mode", "mock"),
@@ -30,6 +41,7 @@ def set_last_scan(scan: dict) -> None:
         breach_count=scan.get("breach_count", 0),
         services_total=scan.get("services_total", 0),
         services_down_count=scan.get("services_down_count", 0),
+        container_problems=problems,
     )
     db.session.add(run)
     db.session.flush()  # assign run.id
@@ -133,6 +145,10 @@ def _scan_run_to_dict(run: ScanRun) -> dict:
         "services_total": run.services_total,
         # On-breach SSH evidence, so the dashboard can show what the email shows.
         "diagnostics": run.diagnostics or {},
+        # docker's verdict as of this run. Present in both shapes on purpose:
+        # /api/scan returns the live dict and /api/status rebuilds from the row,
+        # and they must not disagree (see test_contract.py).
+        "container_problems": run.container_problems or [],
     }
 
 
@@ -145,10 +161,21 @@ def _alert_to_dict(a: Alert) -> dict:
 
 
 # --- alerting support -------------------------------------------------------
+def container_problems() -> list:
+    """The current container problems, or [] if collection is unavailable."""
+    try:
+        import containers
+        return containers.problems()
+    except Exception:
+        log.exception("could not read container problems")
+        return []
+
+
 def recent_problem_key_sets(n: int) -> list:
     """Problem-key sets for the last ``n`` scan runs, newest first.
 
-    A "problem key" is a breached metric key, a down service key, or - when
+    A "problem key" is a breached metric key, a down service key, a
+    ``ctr:<instance>:<name>`` key for a container docker calls broken, or - when
     ALERT_ON_NO_DATA is on - a ``<key>:nodata`` marker for a metric that STOPPED
     reporting. That last one exists because a metric with no value is not
     compared against its threshold, so it used to count as healthy: Backend
@@ -166,6 +193,9 @@ def recent_problem_key_sets(n: int) -> list:
     for i, r in enumerate(runs[:want]):
         keys = {m.key for m in r.metric_results if m.breached and m.key}
         keys |= {s.key for s in r.service_results if s.up is False and s.key}
+        # docker's verdict on a service, recorded with the run so it confirms and
+        # recovers through the same hysteresis as everything else.
+        keys |= {c["key"] for c in (r.container_problems or []) if c.get("key")}
         if config.ALERT_ON_NO_DATA and i + 1 < len(runs):
             reported_before = {m.key for m in runs[i + 1].metric_results
                                if m.value is not None and m.key}

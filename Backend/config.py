@@ -137,6 +137,23 @@ SPECS_REFRESH_HOURS = _int("SPECS_REFRESH_HOURS", 6)
 # moment the process can know it was away. A gap longer than
 # SCAN_GAP_INTERVALS cycles is a real absence rather than a slow cycle.
 ALERT_ON_SCAN_GAP = _b("ALERT_ON_SCAN_GAP", True)
+
+# --- container health as an alert condition ----------------------------------
+# docker's own verdict on a service, promoted to something that can email. It was
+# shown on the dashboard and excluded from the decision, so `pct-api` answered
+# nothing on Backend Production for 2h20m while an "All systems healthy" message
+# went out over the top of it.
+#
+# Only states that mean BROKEN. A `stopped` container is usually correct - a
+# finished migration job (`ecr-migrate-prod`, exit 0, two days old) should be
+# stopped, and alerting on it would train people to ignore the mail. `created`
+# is deploy debris. Both stay on the dashboard, neither emails.
+ALERT_ON_CONTAINER_HEALTH = _b("ALERT_ON_CONTAINER_HEALTH", True)
+CONTAINER_ALERT_STATES = tuple(
+    x for x in (y.strip().lower() for y in
+                _clean(os.getenv("CONTAINER_ALERT_STATES", "unhealthy,restarting")).split(","))
+    if x
+)
 SCAN_GAP_INTERVALS = _int("SCAN_GAP_INTERVALS", 3)
 
 # --- Docker workloads (containers.py) ----------------------------------------

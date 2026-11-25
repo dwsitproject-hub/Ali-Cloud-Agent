@@ -51,6 +51,8 @@ dashboard shows everything grouped by environment. Access is gated by SSO
   `enabled_instance_dicts()`).
 - `Backend/state.py` - **DB-backed** persistence: `set_last_scan`/`set_last_alert`
   write rows; `snapshot()` reconstructs the legacy dict shapes for `/api/status`.
+  `set_last_scan` also snapshots `containers.problems()` onto the run, so docker's
+  verdict has the per-scan history `alerting.decide()` needs.
 - `Backend/instances_api.py` - instance CRUD API + `/api/instances/meta` (roles+groups).
 - `Backend/auth/sso.py` - DWS Hub SSO via **OIDC (Authlib, Auth Code + PKCE,
   public client)**: `/auth/oidc/login` + `/auth/oidc/callback`; plus
@@ -254,6 +256,22 @@ are not duplicated onto every metric row and every history entry.
   serve the old copy after a deploy - a CSS change that adds a rule then fails
   silently (an unmatched `fill: url(#...)` falls back to black, which is how this
   was noticed).
+- **docker's verdict on a container is an alert condition, not just a dashboard
+  one.** `pct-api` answered nothing on Backend Production for 2h20m: the process
+  was alive and pinned at a core with its event loop blocked, so the published
+  port stayed bound and a port probe could not see it. docker knew - 578 failed
+  healthchecks - and the triage band showed it, but container health was not a
+  problem key, so `alerting.decide()` saw nothing and sent **"All systems
+  healthy"** over the top of a dead API. `containers.problems()` now emits a
+  `ctr:<instance>:<name>` key for the states that mean BROKEN
+  (`CONTAINER_ALERT_STATES`, default `unhealthy,restarting`), recorded per run in
+  `ScanRun.container_problems` so it confirms and recovers through the same
+  hysteresis as everything else. `stopped` and `created` stay dashboard-only on
+  purpose: a finished migration job SHOULD be stopped, and alerting on it trains
+  people to ignore the mail. Keyed on the container rather than its state, so an
+  `unhealthy`→`restarting` flip is one ongoing problem. One cycle behind by
+  construction - `containers.refresh()` runs after the scan is persisted, the same
+  lag `for_alert()` already has.
 - Keep the scheduler to ONE process (single APScheduler). State is now in
   Postgres, but the scheduler must still be single; run gunicorn `--workers 1`.
 - The scheduler's background scan + the immediate first scan run inside an

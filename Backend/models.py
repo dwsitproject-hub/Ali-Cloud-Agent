@@ -123,6 +123,10 @@ class ScanRun(db.Model):
     # On-breach SSH evidence: {instance_name: {host, focus, output}} — see
     # diagnostics.py. Attached after the run is written, so it may be null.
     diagnostics = db.Column(db.JSON)
+    # Containers docker called broken as of this run (see containers.problems()).
+    # Recorded per run so alerting.decide() can confirm one across consecutive
+    # scans and declare recovery; Instance.containers_json holds only the latest.
+    container_problems = db.Column(db.JSON)
     created_at = db.Column(db.DateTime(timezone=True), default=_utcnow, nullable=False, index=True)
 
     metric_results = db.relationship(
