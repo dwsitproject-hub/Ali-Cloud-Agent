@@ -86,14 +86,26 @@ def test_a_scan_that_ran_with_no_datapoint_is_not_a_monitoring_gap(app, client):
     assert all(p["s"] > 0 for p in pts)
 
 
+# Far enough back that no other test's scan rows share the window. The suite runs
+# against one persistent Postgres and every run leaves ScanRun rows around "now",
+# so a gap asserted over the last hour fragments as the database accumulates -
+# the endpoint counts every scan, by design, not just this instance's.
+QUIET_START = 1260          # minutes ago
+QUIET_END = 1140
+
+
 def test_buckets_with_no_scan_are_reported_as_gaps(app, client):
     """Nothing written for a stretch: s == 0, and it lands in `gaps`."""
-    _seed(app, [(50, 40.0), (5, 41.0)])
-    body = client.get(
-        "/api/metrics/history?instance_id=%s&hours=1&points=240" % INST).get_json()
-    assert body["gaps"], "a 45-minute hole was not reported"
+    _seed(app, [(QUIET_START, 40.0), (QUIET_END, 41.0)])
+    now = datetime.now(timezone.utc)
+    body = client.get("/api/metrics/history", query_string={
+        "instance_id": INST, "points": "240",
+        "from": (now - timedelta(minutes=QUIET_START + 10)).isoformat(),
+        "to": (now - timedelta(minutes=QUIET_END - 10)).isoformat(),
+    }).get_json()
+    assert body["gaps"], "a two-hour hole was not reported"
     biggest = max(body["gaps"], key=lambda g: g["minutes"])
-    assert biggest["minutes"] >= 30
+    assert biggest["minutes"] >= 60, body["gaps"]
     assert biggest["buckets"] >= 6
     # Every point inside a gap says so.
     assert any(p["s"] == 0 and p["v"] is None for p in _cpu(body)["points"])
