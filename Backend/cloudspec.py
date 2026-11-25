@@ -156,6 +156,41 @@ def _stale(inst, now) -> bool:
     return (now - last) >= timedelta(hours=config.SPECS_REFRESH_HOURS)
 
 
+# docker reports the RAM the OS can see, which sits a little under the
+# provisioned figure (firmware and kernel reservations): 16 GB provisioned shows
+# as 14.96 GiB, about 7% under. A resize is a step change of 50% or more, so this
+# threshold separates the two without firing on the normal shortfall.
+_SPEC_DISAGREEMENT = 0.25
+
+
+def _contradicted(inst) -> bool:
+    """True when the host itself reports different RAM than the cached spec.
+
+    _stale() is a clock, and hardware does not change on a schedule. Backend
+    Production was resized 8 GB -> 16 GB on 2026-11-25; the card kept printing
+    "8 GB RAM" for hours, which is not just a cosmetic staleness - that figure is
+    the denominator a reader uses to judge every memory percentage beside it.
+
+    `docker stats` names the true total for any container with no mem_limit, so
+    containers.host_mem_bytes() is an independent second opinion that costs no
+    API call. Disagreement means re-describe now instead of at the next 6-hour
+    boundary. Silent when the host reports no containers, which is most of them.
+    """
+    cached_mb = getattr(inst, "memory_mb", None)
+    if not cached_mb:
+        return False
+    rows = getattr(inst, "containers_json", None) or []
+    if not rows:
+        return False
+    import containers
+
+    total = containers.host_mem_bytes(rows)
+    if not total:
+        return False
+    actual_mb = total / (1024 ** 2)
+    return abs(actual_mb - cached_mb) / cached_mb > _SPEC_DISAGREEMENT
+
+
 def refresh_specs(force: bool = False) -> int:
     """Update cached specs for instances whose copy is missing or stale.
 
@@ -170,7 +205,8 @@ def refresh_specs(force: bool = False) -> int:
     from models import Instance
 
     now = datetime.now(timezone.utc)
-    pending = [i for i in Instance.query.all() if force or _stale(i, now)]
+    pending = [i for i in Instance.query.all()
+               if force or _stale(i, now) or _contradicted(i)]
     if not pending:
         return 0
 

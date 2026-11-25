@@ -377,6 +377,12 @@ svg.chart .thr { stroke: var(--hot); stroke-width: 1; stroke-dasharray: 4 4; }
 svg.chart .thrtxt { fill: var(--hot); font: 11px var(--f-mono); }
 svg.chart .overband { fill: var(--hot-a); }
 svg.chart .gapband { fill: var(--warn-a); }
+/* Two different holes. gapband = the monitor ran and the metric had no
+   datapoint. blindband = no scan ran at all, so the monitor has nothing to say
+   about that window for ANY instance - hatched, because it is an absence of
+   observation rather than an observed absence. */
+svg.chart .blindband { fill: url(#blindhatch); }
+svg.chart .blindhatch-line { stroke: var(--warn); stroke-width: 1; opacity: .45; }
 svg.chart .over { fill: var(--hot); }
 svg.chart .cursor { stroke: var(--mut); stroke-width: 1; stroke-dasharray: 3 3; opacity: 0; }
 svg.chart .cdot { fill: var(--txt); opacity: 0; }

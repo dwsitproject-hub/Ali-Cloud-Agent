@@ -94,7 +94,10 @@ dashboard shows everything grouped by environment. Access is gated by SSO
   packets went nowhere (instance down, or a security group dropping them).
 - `Backend/config.py` - env settings + `METRIC_TEMPLATES`, `SERVICE_CHECKS_BY_ROLE`,
   `INSTANCE_GROUPS` (seed only), `build_metrics()`/`build_service_checks()`.
-- `Backend/seed.py` - `flask seed` (idempotent: groups/instances/dev-user).
+- `Backend/seed.py` - `flask seed`: groups + dev-user always, instances **only
+  when the inventory is empty**. The compose `command` runs it on every start,
+  and topping up by id used to resurrect deleted instances on each restart.
+  `--force` restores the stock inventory deliberately.
 - `Backend/wsgi.py` - gunicorn entry (`--workers 1`; inserts Backend/ on path).
 
 ## HTTP API
@@ -102,7 +105,8 @@ dashboard shows everything grouped by environment. Access is gated by SSO
 POST `/api/scan` (`?auto_alert=true`) | POST `/api/send` | GET `/api/csrf` |
 GET `/api/health` (liveness, public) | GET `/api/ready` (readiness: DB + scan
 freshness, public) | GET `/api/metrics/history` (`?instance_id=&hours=` or
-`&from=&to=&points=`) | GET/POST `/api/instances`, GET `/api/instances/meta`,
+`&from=&to=&points=`; points carry `s` = scans in that bucket, plus a top-level
+`gaps` list of windows where no scan ran) | GET/POST `/api/instances`, GET `/api/instances/meta`,
 PATCH/DELETE `/api/instances/<id>` | GET `/auth/oidc/login` +
 `/auth/oidc/callback` (OIDC), GET `/auth/info` (public), `/auth/dev-login`,
 `/auth/login` (→ FE login), `/auth/logout`.
@@ -134,6 +138,8 @@ are not duplicated onto every metric row and every history entry.
   (frontend `instances.html`) or the CRUD API. The agents read enabled instances
   each scan, so changes apply on the next cycle.
 - `config.INSTANCE_GROUPS` is **seed data only** (`flask seed`), not the live source.
+  It seeds an EMPTY inventory only: once any instance exists the register page
+  owns the list, and a missing id there is a deletion, not a gap to fill.
 - `METRIC_TEMPLATES` (ECS: CPU no-agent; Memory/Disk need the CloudMonitor agent)
   and `SERVICE_CHECKS_BY_ROLE` (default TCP/HTTP checks per role) remain code; the
   `build_metrics`/`build_service_checks` helpers expand instance dicts into the
@@ -209,6 +215,40 @@ are not duplicated onto every metric row and every history entry.
   `containers.py` and `app.js`): a ranking of containers that all read 0.0% still
   has a first row, and it used to be shown as "the heaviest" - on a breach whose
   load was an image build, which no container is charged for either.
+- **A deleted instance must stay deleted across restarts.** `flask seed` runs from
+  the compose `command` on every container start; while it topped up by id, DB
+  Staging and DB Production reappeared after each restart long after being retired
+  to ApsaraDB - two timed-out probes and a failed diagnostics SSH every cycle, and
+  deleting them again achieved nothing. Seeding is now a bootstrap: instances are
+  created only when the table is empty (`seed_data(force=True)` for the old
+  behaviour). Groups and the dev user stay idempotent - a missing group breaks the
+  register page's form.
+- **The cached spec is a denominator, so a stale one misleads.** `cloudspec._stale()`
+  is a 6-hour clock and hardware does not change on a schedule: after Backend
+  Production was resized 8 GB -> 16 GB the card kept printing "8 GB RAM" while every
+  memory percentage beside it was read against the wrong total. `_contradicted()`
+  now compares the cached `memory_mb` against `containers.host_mem_bytes()` - docker's
+  own view of the machine, free of an API call - and forces a re-describe when they
+  disagree by more than 25%.
+- **The monitor cannot observe its own outage.** When the host it runs on hangs,
+  the scheduler stops with it: no scan rows, so the history shows a hole that
+  reads as "nothing happened". On 2026-11-25 Backend Production breached memory at
+  92.18% while the monitor hosted on it was hung, and only the peer monitor on
+  another host had the record. Two defences: `scheduler.detect_scan_gap()` compares
+  the previous `ScanRun.created_at` (read BEFORE this scan is written) against now
+  and, past `SCAN_GAP_INTERVALS` cycles, reports a gap - emailed via
+  `_alert_scan_gap()` on its own, NOT through `alerting.decide()`, because "there
+  were no observations" is not a problem key and must be said even when nothing is
+  currently wrong. And `/api/metrics/history` carries `s` (scans per bucket) plus a
+  `gaps` list, so the chart can distinguish **no scan ran** (hatched; the monitor
+  was absent, nothing describes that window for ANY instance) from **the metric
+  stopped reporting** (solid amber; one agent went quiet while the monitor
+  watched). Conflating them hides the worse one.
+- **`app.css`/`app.js` are cache-busted by a manual `?v=` string** in every page.
+  Change either file and bump it in all of `Frontend/public/*.html`, or browsers
+  serve the old copy after a deploy - a CSS change that adds a rule then fails
+  silently (an unmatched `fill: url(#...)` falls back to black, which is how this
+  was noticed).
 - Keep the scheduler to ONE process (single APScheduler). State is now in
   Postgres, but the scheduler must still be single; run gunicorn `--workers 1`.
 - The scheduler's background scan + the immediate first scan run inside an
