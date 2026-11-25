@@ -32,6 +32,14 @@ def run_scan_job(auto_alert=None) -> dict:
     if auto_alert is None:
         auto_alert = config.AUTO_ALERT_ON_BREACH
 
+    # Read the previous scan's timestamp BEFORE writing this one: the difference
+    # is how long the monitor was absent, and this is the only moment it can know.
+    try:
+        previous_at = state.last_scan_at()
+    except Exception:
+        log.exception("could not read the previous scan time")
+        previous_at = None
+
     scan = agent1_scanner.run_scan()
 
     if config.HEALTHCHECK_ENABLED:
@@ -52,8 +60,19 @@ def run_scan_job(auto_alert=None) -> dict:
              scan["services_down_count"], scan["services_total"],
              scan.get("no_data_count", 0))
 
+    # A gap is reported whether or not anything is currently wrong - the point is
+    # that for that window there was no observation at all, so "nothing wrong" is
+    # not a claim the monitor is entitled to make.
+    gap = detect_scan_gap(previous_at, datetime.now(timezone.utc))
+    if gap:
+        scan["monitoring_gap"] = gap
+        log.warning("monitoring gap: no scan for %s min (~%s missed) from %s",
+                    gap["minutes"], gap["missed_scans"], gap["from"])
+
     if auto_alert:
         _maybe_auto_alert(scan)
+    if gap and config.ALERT_ON_SCAN_GAP:
+        _alert_scan_gap(scan, gap)
 
     # Instance specs (slow cadence, so this is usually a no-op) and the docker
     # workload list. Both are dashboard context rather than alert inputs, so
@@ -80,6 +99,44 @@ def run_scan_job(auto_alert=None) -> dict:
         log.exception("history pruning failed")
 
     return scan
+
+
+def detect_scan_gap(previous_at, now):
+    """``{from, to, minutes, missed_scans}`` when the monitor was away, else None.
+
+    None on the first scan of a fresh database: there is no previous run to
+    compare against, and a first start is not an outage.
+    """
+    if previous_at is None:
+        return None
+    minutes = (now - previous_at).total_seconds() / 60.0
+    interval = max(float(config.SCAN_INTERVAL_MINUTES), 1.0)
+    if minutes <= interval * config.SCAN_GAP_INTERVALS:
+        return None
+    return {
+        "from": previous_at.isoformat(),
+        "to": now.isoformat(),
+        "minutes": round(minutes, 1),
+        # One interval is the expected spacing; the rest are scans that never ran.
+        "missed_scans": max(int(minutes // interval) - 1, 1),
+    }
+
+
+def _alert_scan_gap(scan: dict, gap: dict) -> None:
+    """Email that the monitor was blind, separately from any breach alert.
+
+    Deliberately NOT routed through alerting.decide(): that is transition-based
+    over problem keys, and "there were no observations" is not a problem key. It
+    also fires once by construction - the next cycle's previous_at is this scan,
+    so the gap is gone.
+    """
+    try:
+        alert = agent2_alerter.send_alert(scan)
+        alert["trigger"] = "auto"
+        alert["reason"] = "scan-gap"
+        state.set_last_alert(alert)
+    except Exception:
+        log.exception("scan-gap alert failed to send")
 
 
 def _maybe_auto_alert(scan: dict) -> None:

@@ -388,6 +388,36 @@ def _diagnosis_section(scan: dict) -> str:
     )
 
 
+def _gap_section(gap) -> str:
+    """Say plainly that there is a window with no observations.
+
+    Worth its own block rather than a footnote: every other figure in the email
+    is a point sample, and this names the period for which there are none. The
+    peer monitor on another host is the place to look, which is how the
+    2026-11-25 Backend Production breach was recovered at all.
+    """
+    if not gap:
+        return ""
+    return (
+        "<div style='margin:14px 0;padding:12px 14px;border-left:4px solid #e0a800;"
+        "background:#fff8e1;border-radius:4px'>"
+        "<b style='color:#8a6d00'>Monitoring gap &mdash; no scan ran for "
+        "%(minutes)s minutes</b>"
+        "<div style='margin-top:6px;font-size:13px;color:#555'>"
+        "From <code>%(from)s</code> to <code>%(to)s</code> UTC, roughly "
+        "%(missed)s scheduled scan(s) did not run. No metric or probe was "
+        "recorded for ANY instance in that window, so nothing below describes "
+        "it &mdash; a breach could have started and ended inside it."
+        "</div>"
+        "<div style='margin-top:6px;font-size:13px;color:#555'>"
+        "The usual cause is the host running this monitor hanging or restarting. "
+        "A peer monitor on another host keeps watching through such a window: "
+        "check its history for this period."
+        "</div></div>"
+    ) % {"minutes": gap["minutes"], "from": gap["from"][:19],
+         "to": gap["to"][:19], "missed": gap["missed_scans"]}
+
+
 def build_email(scan: dict) -> dict:
     """Return {subject, html_body} for a given scan result document."""
     n_breach = len(scan.get("breaches", []))
@@ -395,10 +425,16 @@ def build_email(scan: dict) -> dict:
     n_down = len(services_down)
     stopped = scan.get("stopped_reporting", [])
     n_stopped = len(stopped)
+    gap = scan.get("monitoring_gap")
     when = scan.get("scanned_at", datetime.now(timezone.utc).isoformat())
 
-    if n_breach or n_down or n_stopped:
+    if n_breach or n_down or n_stopped or gap:
         parts = []
+        if gap:
+            # First in the subject: it qualifies everything else in the email.
+            # Whatever the other sections say, there is a window they say nothing
+            # about, and the reader needs to know that before reading them.
+            parts.append("monitoring gap %s min" % gap["minutes"])
         if n_breach:
             parts.append(f"{n_breach} threshold breach{'es' if n_breach != 1 else ''}")
         if n_down:
@@ -413,6 +449,7 @@ def build_email(scan: dict) -> dict:
         status_color = "#27ae60"
         status_text = "All clear - metrics within thresholds, services up"
 
+    gap_html = _gap_section(gap)
     metric_rows = _metrics_rows(scan.get("results", []))
     services_html = _services_section(services_down) + _stopped_section(stopped)
     diagnosis_html = (_top_consumers_section(scan) + _evidence_section(scan)
@@ -426,6 +463,7 @@ def build_email(scan: dict) -> dict:
   </div>
   <div style="border:1px solid #eee;border-top:none;border-radius:0 0 8px 8px;padding:16px 20px">
     <p style="color:#555;font-size:13px;margin-top:0">Scan time (UTC): {html.escape(when)} &nbsp;|&nbsp; Mode: {scan.get('mode','?')}</p>
+    {gap_html}
     {services_html}
     <h3 style="font-size:14px;color:#2c3e50;margin:18px 0 6px">Resource metrics</h3>
     <table style="border-collapse:collapse;width:100%;font-size:14px">

@@ -8,7 +8,7 @@
 <link rel="preconnect" href="https://fonts.googleapis.com">
 <link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
 <link rel="stylesheet" href="https://fonts.googleapis.com/css2?family=Space+Grotesk:wght@500;600;700&family=Inter:wght@400;500;600&family=JetBrains+Mono:wght@400;500;600&display=swap" media="print" onload="this.media='all'">
-<link rel="stylesheet" href="app.css?v=20261110b">
+<link rel="stylesheet" href="app.css?v=20261125a">
 </head>
 <body>
 <header class="topbar" id="topbar"></header>
@@ -43,7 +43,7 @@
 <div id="toast" role="status" aria-live="polite"></div>
 
 <script src="config.js"></script>
-<script src="app.js?v=20261110b"></script>
+<script src="app.js?v=20261125a"></script>
 <script>
 /* One instance: what is open on it, its history, what it runs, and the runbook.
    The Overview answers "is it bad now"; the history chart here answers "was it
@@ -248,7 +248,10 @@ function chSvg(s, g, spanHours) {
     return `<rect class="${cls}" x="${x0.toFixed(1)}" y="${g.padT}" width="${Math.max(x1 - x0, 1).toFixed(1)}" height="${g.plotH}"></rect>`;
   };
   for (let k = 0, run = null; k <= n; k++) {
-    const kind = k < n ? (s.points[k].v == null ? 'gapband' : (chIsOver(s, s.points[k].v) ? 'overband' : null)) : null;
+    // s === 0 means no scan ran in this bucket: the monitor itself was away, which
+    // is a different (and worse) hole than a metric that stopped reporting.
+    const kind = k < n ? (s.points[k].s === 0 ? 'blindband'
+      : (s.points[k].v == null ? 'gapband' : (chIsOver(s, s.points[k].v) ? 'overband' : null))) : null;
     if (run && run.kind !== kind) { bands += band(run.kind, run.from, k - 1); run = null; }
     if (kind && !run) run = { kind: kind, from: k };
   }
@@ -276,6 +279,8 @@ function chSvg(s, g, spanHours) {
     .map(k => `<text class="axis" x="${X(k).toFixed(1)}" y="${g.H - 6}" text-anchor="${k === 0 ? 'start' : (k === n - 1 ? 'end' : 'middle')}">${esc(chFmtTime(s.points[k].t, spanHours))}</text>`).join('');
 
   return `<svg class="chart" role="img" aria-label="${esc(s.label + ' history')}" width="${g.w}" height="${g.H}" viewBox="0 0 ${g.w} ${g.H}">
+    <defs><pattern id="blindhatch" width="6" height="6" patternUnits="userSpaceOnUse" patternTransform="rotate(45)">
+      <line class="blindhatch-line" x1="0" y1="0" x2="0" y2="6"></line></pattern></defs>
     ${bands}${grid}${thr}<path class="line" d="${d.trim()}"></path>${dots}
     <line class="cursor" x1="0" y1="${g.padT}" x2="0" y2="${g.padT + g.plotH}"></line><circle class="cdot" cx="0" cy="0" r="3.5"></circle>
     ${ticks}<rect x="${g.padL}" y="${g.padT}" width="${g.plotW}" height="${g.plotH}" fill="transparent"></rect></svg>`;
@@ -304,17 +309,27 @@ function chDraw() {
     const g = chGeom(Math.max(body.clientWidth || 820, 320));
     body.innerHTML = `<div class="chart-wrap">${chSvg(s, g, spanHours)}<div class="chart-tip"></div></div>`;
     chAttachHover(s, g);
-    const u = s.unit || '', over = s.points.filter(p => chIsOver(s, p.v)).length, gaps = s.points.filter(p => p.v == null).length;
+    const u = s.unit || '', over = s.points.filter(p => chIsOver(s, p.v)).length;
+    // Counted apart on purpose: one is an agent problem, the other is this
+    // monitor having been absent - and only the second invalidates the window.
+    const blind = s.points.filter(p => p.s === 0).length;
+    const quiet = s.points.filter(p => p.v == null && p.s > 0).length;
     const stat = (label, val, tone) => `<div class="stat ${tone || ''}"><span class="eyebrow">${label}</span><b>${esc(val)}</b></div>`;
     const now = vals[vals.length - 1];
     $('#chStats').innerHTML = stat('Now', C.num(now) + u, chIsOver(s, now) ? 'hot' : '')
       + stat('Peak', C.num(Math.max.apply(null, vals)) + u) + stat('Lowest', C.num(Math.min.apply(null, vals)) + u)
       + stat('Time over limit', over ? C.span(over * bucket * 1000) : 'none', over ? 'hot' : '')
-      + (gaps ? stat('Not reporting', C.span(gaps * bucket * 1000), 'warn') : '');
+      + (quiet ? stat('Not reporting', C.span(quiet * bucket * 1000), 'warn') : '')
+      + (blind ? stat('No scan ran', C.span(blind * bucket * 1000), 'warn') : '');
   }
+  const blindNote = (d.gaps && d.gaps.length)
+    ? ' Hatched amber is time when NO scan ran at all - this monitor was not watching, so nothing here describes that window for any instance;' +
+      ' a breach could have started and ended inside it. Check a peer monitor running on a different host.'
+    : '';
   $('#chNote').textContent = 'Each point is the ' + (s.aggregate === 'min' ? 'lowest' : 'highest') + ' value in a ' + bucketMin +
-    '-minute bucket, not the average: averaging hides the short spikes worth finding. Shaded red is time over the limit, shaded amber is ' +
-    'time with no datapoint. Times on the chart are local. Scans run every ' + d.interval_minutes + ' min; history is kept ' + d.retention_days + ' days.';
+    '-minute bucket, not the average: averaging hides the short spikes worth finding. Shaded red is time over the limit, solid amber is ' +
+    'time the metric reported no datapoint.' + blindNote +
+    ' Times on the chart are local. Scans run every ' + d.interval_minutes + ' min; history is kept ' + d.retention_days + ' days.';
 }
 
 function chAttachHover(s, g) {
