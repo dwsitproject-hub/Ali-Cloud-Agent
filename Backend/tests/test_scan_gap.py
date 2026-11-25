@@ -119,3 +119,38 @@ def test_last_scan_at_is_timezone_aware(app):
         finally:
             db.session.delete(run)
             db.session.commit()
+
+
+# --- specs are re-read on a restart -----------------------------------------
+def test_specs_are_force_refreshed_once_per_process(monkeypatch):
+    """A restart is when a human has changed something, so re-describe then.
+
+    The usual trigger is a 6-hour clock, and cloudspec._contradicted() only
+    shortens it for hosts this monitor also collects containers from. A peer
+    monitor watching another environment has no docker view of them, which is why
+    Backend Production kept reading "8 GB RAM" on the staging dashboard for hours
+    after being resized to 16 GB.
+    """
+    import cloudspec
+
+    calls = []
+    monkeypatch.setattr(cloudspec, "refresh_specs",
+                        lambda force=False: calls.append(force))
+    monkeypatch.setattr(scheduler, "_specs_refreshed_at_boot", False)
+    # Keep the cycle to the spec refresh alone.
+    monkeypatch.setattr(scheduler.agent1_scanner, "run_scan", lambda: {
+        "mode": "mock", "total": 0, "breach_count": 0, "results": [], "breaches": [],
+        "scanned_at": NOW.isoformat()})
+    monkeypatch.setattr(config, "HEALTHCHECK_ENABLED", False)
+    monkeypatch.setattr(scheduler.state, "set_last_scan", lambda scan: None)
+    monkeypatch.setattr(scheduler.state, "last_scan_at", lambda: None)
+    monkeypatch.setattr(scheduler.state, "prune_history", lambda days: 0)
+    import containers
+    monkeypatch.setattr(containers, "refresh", lambda: 0)
+
+    scheduler.run_scan_job(auto_alert=False)
+    scheduler.run_scan_job(auto_alert=False)
+    scheduler.run_scan_job(auto_alert=False)
+
+    assert calls == [True, False, False], (
+        "expected one forced refresh at boot then the normal cadence, got %s" % calls)

@@ -229,7 +229,12 @@ are not duplicated onto every metric row and every history entry.
   memory percentage beside it was read against the wrong total. `_contradicted()`
   now compares the cached `memory_mb` against `containers.host_mem_bytes()` - docker's
   own view of the machine, free of an API call - and forces a re-describe when they
-  disagree by more than 25%.
+  disagree by more than 25%. That only helps where this monitor ALSO collects
+  containers from the host: a peer monitor watching another environment has no
+  docker view of it, and Backend Production kept reading "8 GB RAM" on the staging
+  dashboard for hours after the resize for exactly that reason. So the scheduler
+  additionally forces a refresh on the FIRST scan of each process - a restart is
+  when a human has changed something.
 - **The monitor cannot observe its own outage.** When the host it runs on hangs,
   the scheduler stops with it: no scan rows, so the history shows a hole that
   reads as "nothing happened". On 2026-11-25 Backend Production breached memory at

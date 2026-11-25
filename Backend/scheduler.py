@@ -22,6 +22,8 @@ log = logging.getLogger("scheduler")
 
 _scheduler = None
 _app = None  # Flask app captured at start(), for background-thread app contexts
+# Specs are force-refreshed once per process (see run_scan_job).
+_specs_refreshed_at_boot = False
 
 
 def run_scan_job(auto_alert=None) -> dict:
@@ -29,6 +31,8 @@ def run_scan_job(auto_alert=None) -> dict:
 
     Returns the combined scan document (metrics + services).
     """
+    global _specs_refreshed_at_boot
+
     if auto_alert is None:
         auto_alert = config.AUTO_ALERT_ON_BREACH
 
@@ -79,7 +83,16 @@ def run_scan_job(auto_alert=None) -> dict:
     # neither is allowed to break a scan cycle.
     try:
         import cloudspec
-        cloudspec.refresh_specs()
+        # Force on the FIRST scan of each process. A restart is exactly the moment
+        # a human has changed something - this deploy follows a resize - and the
+        # usual trigger is a 6-hour clock, so a new denominator can otherwise sit
+        # wrong for most of a working day. _contradicted() shortens that only for
+        # hosts this monitor also collects containers from; a peer monitor
+        # watching another environment has no docker view of them at all, which is
+        # how Backend Production kept reading "8 GB RAM" on the staging dashboard
+        # hours after being resized to 16 GB.
+        cloudspec.refresh_specs(force=not _specs_refreshed_at_boot)
+        _specs_refreshed_at_boot = True
     except Exception:
         log.exception("instance spec refresh failed")
     try:
