@@ -18,6 +18,7 @@ no SSH user configured this collects nothing and says so, instead of failing.
 from __future__ import annotations
 
 import logging
+import re
 from concurrent.futures import ThreadPoolExecutor
 from datetime import datetime, timezone
 
@@ -82,6 +83,73 @@ def _pct(raw: str):
         return None
 
 
+# docker prints MemUsage as "435MiB / 1GiB", in whichever unit reads best.
+_UNITS = {"b": 1, "kib": 1024, "mib": 1024 ** 2, "gib": 1024 ** 3, "tib": 1024 ** 4,
+          "kb": 1000, "mb": 1000 ** 2, "gb": 1000 ** 3, "tb": 1000 ** 4}
+
+
+def _bytes(raw: str):
+    """"435MiB" -> 456130560. None for "--" or anything unparseable."""
+    text = (raw or "").strip().lower()
+    match = re.match(r"^([0-9]*\.?[0-9]+)\s*([a-z]+)$", text)
+    if not match:
+        return None
+    unit = _UNITS.get(match.group(2))
+    if unit is None:
+        return None
+    try:
+        return int(float(match.group(1)) * unit)
+    except ValueError:
+        return None
+
+
+def _usage_pair(raw: str) -> tuple:
+    """"435MiB / 1GiB" -> ``(used_bytes, limit_bytes)``, either may be None."""
+    parts = (raw or "").split("/")
+    used = _bytes(parts[0]) if parts else None
+    limit = _bytes(parts[1]) if len(parts) > 1 else None
+    return used, limit
+
+
+def host_mem_bytes(rows: list):
+    """Total RAM of the host, read back out of docker's own output.
+
+    A container with no ``mem_limit`` has the whole machine as its ceiling, so
+    `docker stats` prints the HOST total as its limit - and several such
+    containers all print the same number. That makes the most-repeated limit a
+    reliable measure of host RAM, and crucially a *self-correcting* one: when
+    the instance was resized from 8 GB to 16 GB on 2026-11-25 the cached
+    `Instance.memory_mb` spec still read 8192 for hours (SPECS_REFRESH_HOURS),
+    while this figure was right on the next scan.
+
+    Returns None when every container is capped - then no host-relative share
+    can be computed, and callers must fall back to absolute bytes.
+    """
+    counts = {}
+    for row in rows:
+        limit = row.get("mem_limit_bytes")
+        if limit:
+            counts[limit] = counts.get(limit, 0) + 1
+    # Two containers sharing a ceiling means it is the machine, not a coincidence
+    # of two services configured with the same mem_limit.
+    shared = [limit for limit, n in counts.items() if n >= 2]
+    return max(shared) if shared else None
+
+
+def mem_share(row: dict):
+    """A container's memory as a share of the HOST, or None if unknown.
+
+    NOT `docker stats` MemPerc. That is measured against the container's own
+    ``mem_limit`` when one is set, so the column mixes denominators and cannot
+    be compared across rows or against the host metric beside it. On Backend
+    Production this inverted the ranking outright: `aastar-price-api` showed
+    42.48% (435 MiB of a 1 GiB cap) while
+    `plantation-rainfall-backend-production` showed 6.06% for a LARGER 449 MiB,
+    having no cap at all.
+    """
+    return row.get("mem_pct_host")
+
+
 # Below this share a container is not an explanation for a host breach. Without a
 # floor, a ranking of containers that ALL read 0.0% still has a first row, and the
 # email and dashboard presented it as "the heaviest" - sending the reader to an
@@ -92,20 +160,56 @@ def _pct(raw: str):
 NEGLIGIBLE_PCT = 5.0
 
 
+def _rank_key(by: str) -> str:
+    """Which field orders a "heaviest" list.
+
+    CPU% is already host-relative, so it ranks directly. Memory must rank on
+    absolute bytes: see mem_share() for why MemPerc cannot be compared between
+    containers.
+    """
+    return "cpu_pct" if by == "cpu" else "mem_bytes"
+
+
+def _share(row: dict, by: str):
+    """A container's share OF THE HOST for ``by``, or None when unknown.
+
+    Falls back to limit-relative MemPerc when mem_pct_host is absent, which
+    happens for rows written by an older build and still sitting in
+    `Instance.containers_json` until the next scan rewrites them. Treating a
+    missing field as 0 instead would mute the alert's "which service" line for
+    a cycle - a silent regression, and the worst kind.
+    """
+    if by == "cpu":
+        return row.get("cpu_pct")
+    host = row.get("mem_pct_host")
+    return host if host is not None else row.get("mem_pct")
+
+
 def stands_out(rows: list, by: str = "cpu") -> bool:
-    """True when at least one container is busy enough to be worth naming."""
-    key = "cpu_pct" if by == "cpu" else "mem_pct"
-    return any((r.get(key) or 0.0) >= NEGLIGIBLE_PCT for r in rows)
+    """True when at least one container is busy enough to be worth naming.
+
+    Measured against the host, so the floor means the same thing for memory as
+    for CPU. A capped container sitting at 90% of its own 256 MiB limit is 0.3%
+    of a 16 GB host and explains nothing about a host breach.
+    """
+    return any((_share(r, by) or 0.0) >= NEGLIGIBLE_PCT for r in rows)
 
 
 def top_consumers(rows: list, by: str = "cpu", limit: int = 5) -> list:
     """The heaviest containers by ``cpu`` or ``mem``, biggest first.
 
     Used by the alert email to answer "which service caused this" in one line,
-    rather than leaving the reader to scan a wall of `docker stats` output.
+    rather than leaving the reader to scan a wall of `docker stats` output -
+    so getting the ORDER wrong sends the reader to the wrong service, which is
+    worse than saying nothing.
     """
-    key = "cpu_pct" if by == "cpu" else "mem_pct"
+    key = _rank_key(by)
     ranked = [r for r in rows if r.get(key) is not None]
+    if not ranked and by != "cpu":
+        # Host script too old to report MemUsage: fall back to MemPerc rather
+        # than showing an empty list, and accept the mixed denominator.
+        ranked = [r for r in rows if r.get("mem_pct") is not None]
+        key = "mem_pct"
     ranked.sort(key=lambda r: r[key], reverse=True)
     return ranked[:limit]
 
@@ -126,10 +230,16 @@ def parse(output: str) -> tuple:
             error = parts[1] if len(parts) > 1 else "unknown error"
             continue
         if parts[0] == "STAT" and len(parts) >= 5:
+            usage = parts[4].strip()
+            used, cap = _usage_pair(usage)
             stats[parts[1]] = {
                 "cpu_pct": _pct(parts[2]),
+                # Kept for continuity, but it is limit-relative - read
+                # mem_pct_host instead. See mem_share().
                 "mem_pct": _pct(parts[3]),
-                "mem_usage": parts[4].strip(),
+                "mem_usage": usage,
+                "mem_bytes": used,
+                "mem_limit_bytes": cap,
             }
             continue
         if parts[0] != "CTR" or len(parts) < 5:
@@ -141,16 +251,27 @@ def parse(output: str) -> tuple:
             "health": classify(state, status), "ports": ports,
             # Filled from the STAT lines below; a stopped container has none.
             "cpu_pct": None, "mem_pct": None, "mem_usage": "",
+            "mem_bytes": None, "mem_limit_bytes": None, "mem_pct_host": None,
         })
     for row in rows:
         row.update(stats.get(row["name"], {}))
+
+    # One comparable memory figure per container, as a share of the whole box.
+    total = host_mem_bytes(rows)
+    if total:
+        for row in rows:
+            used = row.get("mem_bytes")
+            if used is not None:
+                row["mem_pct_host"] = round(used / total * 100, 2)
     if not rows and error is None and text.strip() and _SENTINEL not in text:
         # Output, but not OUR output: an outdated host script (see _SENTINEL).
         error = _STALE_SCRIPT
     # Problems first, then the heaviest consumer - which is the question being
     # asked when a host spikes: not "what is running" but "what is eating it".
     rows.sort(key=lambda c: (c["health"] not in ("unhealthy", "stopped", "restarting"),
-                             -max(c["cpu_pct"] or 0.0, c["mem_pct"] or 0.0),
+                             -max(c["cpu_pct"] or 0.0,
+                                  c["mem_pct_host"] if c["mem_pct_host"] is not None
+                                  else (c["mem_pct"] or 0.0)),
                              c["name"]))
     return rows, error
 

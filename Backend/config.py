@@ -125,6 +125,20 @@ METRIC_LOOKBACK_MINUTES = _int("METRIC_LOOKBACK_MINUTES", 15)
 # five minutes, so specs are cached on the instance row and refreshed this often.
 SPECS_REFRESH_HOURS = _int("SPECS_REFRESH_HOURS", 6)
 
+# --- monitoring gaps ---------------------------------------------------------
+# The monitor cannot record its own outage. When the host it runs on hangs, the
+# scheduler stops with it: no scan rows are written, so the history shows a hole
+# and the dashboard reads as though nothing happened. That is exactly what
+# occurred on 2026-11-25 - Backend Production breached memory at 92.18% while the
+# monitor hosted on it was hung, and only the peer monitor on another host had
+# the record.
+#
+# A gap is therefore reported on the first scan AFTER one: this is the only
+# moment the process can know it was away. A gap longer than
+# SCAN_GAP_INTERVALS cycles is a real absence rather than a slow cycle.
+ALERT_ON_SCAN_GAP = _b("ALERT_ON_SCAN_GAP", True)
+SCAN_GAP_INTERVALS = _int("SCAN_GAP_INTERVALS", 3)
+
 # --- Docker workloads (containers.py) ----------------------------------------
 # Collected over the SAME least-privilege SSH path as diagnostics (one extra
 # allow-listed focus), so it needs the DIAG_SSH_* identity configured. Only these

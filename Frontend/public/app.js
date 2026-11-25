@@ -212,18 +212,40 @@
   // daemon), or a process on the host itself. Same floor as containers.NEGLIGIBLE_PCT,
   // so the page and the alert email agree on who is named.
   const NEGLIGIBLE_PCT = 5;
-  function usageKey(label) { return label === 'Memory' ? 'mem_pct' : 'cpu_pct'; }
+  // A container's share OF THE HOST, so memory compares like CPU already does.
+  //
+  // NOT docker stats MemPerc (`mem_pct`): that is measured against the
+  // container's own mem_limit when one is set, so the column mixes
+  // denominators and is not comparable between rows - nor against the host
+  // metric printed beside it. On Backend Production it inverted the ranking:
+  // aastar-price-api read 42.48% (435 MiB of a 1 GiB cap) while
+  // plantation-rainfall-backend-production read 6.06% for a LARGER 449 MiB,
+  // being uncapped. Read as host shares those are 2.8% and 2.9%, and the real
+  // leader was pct-api at 15.2% - which the old column buried.
+  // `mem_pct_host` is computed in containers.py; the fallback keeps an older
+  // host script rendering rather than blanking the column.
+  function usageVal(c, label) {
+    if (label !== 'Memory') return c.cpu_pct;
+    return c.mem_pct_host != null ? c.mem_pct_host : c.mem_pct;
+  }
+  function usageKey(label) { return label === 'Memory' ? 'mem_pct_host' : 'cpu_pct'; }
+  // Just the used side of "2.275GiB / 14.96GiB" - the ceiling is noise here, and
+  // for an uncapped container it is simply the whole machine.
+  function memUsed(c) {
+    const u = (c && c.mem_usage || '').split('/')[0].trim();
+    return u || null;
+  }
   // The container with the highest figure, whatever that figure is.
   function busiest(list, label) {
-    const k = usageKey(label);
-    return (list || []).filter(c => c[k] != null).sort((a, b) => b[k] - a[k])[0] || null;
+    return (list || []).filter(c => usageVal(c, label) != null)
+      .sort((a, b) => usageVal(b, label) - usageVal(a, label))[0] || null;
   }
   // The container worth naming as the cause - or null when none stands out.
   // Only CPU and memory: a container's CPU share says nothing about a full disk.
   function heaviest(list, label) {
     if (label !== 'CPU' && label !== 'Memory') return null;
     const c = busiest(list, label);
-    return c && c[usageKey(label)] >= NEGLIGIBLE_PCT ? c : null;
+    return c && usageVal(c, label) >= NEGLIGIBLE_PCT ? c : null;
   }
   const BAD_HEALTH = ['unhealthy', 'stopped', 'restarting'];
   function ctrBad(c) { return BAD_HEALTH.includes(c.health); }
@@ -258,9 +280,11 @@
       const hot = heaviest(det.containers, r.label), top = busiest(det.containers, r.label);
       const word = r.label === 'Memory' ? 'mem' : 'cpu';
       const culprit = hot
-        ? 'Heaviest service on this host: ' + hot.name + ' (' + ctrNum(hot.cpu_pct) + '% cpu, ' + ctrNum(hot.mem_pct) + '% mem' + (hot.mem_usage ? ', ' + hot.mem_usage : '') + ')'
+        ? 'Heaviest service on this host: ' + hot.name + ' (' + ctrNum(hot.cpu_pct) + '% cpu, ' +
+          (memUsed(hot) ? memUsed(hot) + ' mem' : ctrNum(hot.mem_pct) + '% mem') +
+          (hot.mem_pct_host != null ? ' = ' + ctrNum(hot.mem_pct_host) + '% of host' : '') + ')'
         : (r.label !== 'CPU' && r.label !== 'Memory') ? 'Container CPU and memory figures do not explain this one - follow the runbook'
-        : top ? 'No container stands out: the busiest, ' + top.name + ', read ' + ctrNum(top[usageKey(r.label)]) + '% ' + word +
+        : top ? 'No container stands out: the busiest, ' + top.name + ', read ' + ctrNum(usageVal(top, r.label)) + '% of host ' + word +
             ' when docker stats sampled. The load is outside the containers, or had already passed'
         : 'No per-container figures for this host - diagnostics may not be set up on it';
       const under = (r.comparison || '>').charAt(0) === '<';
@@ -404,16 +428,17 @@
       '<span class="v">' + esc(v) + '</span></div>';
     let title = 'What we know', rows = '', note = '';
     if (item.metric) {
-      const key = usageKey(item.kind), word = item.kind === 'Memory' ? 'memory' : 'CPU';
-      const top = (det.containers || []).filter(c => c[key] != null).sort((a, b) => b[key] - a[key]).slice(0, 3);
+      const word = item.kind === 'Memory' ? 'memory' : 'CPU';
+      const top = (det.containers || []).filter(c => usageVal(c, item.kind) != null)
+        .sort((a, b) => usageVal(b, item.kind) - usageVal(a, item.kind)).slice(0, 3);
       const sampled = parseUtc(det.containers_updated_at);
-      if (top.length && item.kind !== 'Disk' && top[0][key] < NEGLIGIBLE_PCT) {
+      if (top.length && item.kind !== 'Disk' && usageVal(top[0], item.kind) < NEGLIGIBLE_PCT) {
         // Figures exist and none of them is the answer. Say that, rather than
         // listing three idle containers under a heading that calls them heavy.
         title = 'What docker stats saw';
         rows = row('Containers', plural((det.containers || []).length, 'container') + ' sampled') +
-          row('Busiest', top[0].name + ' at ' + ctrNum(top[0][key]) + '% ' + word);
-        note = 'No container was using ' + NEGLIGIBLE_PCT + '% ' + word + ' or more' + (sampled ? ' at ' + utcClock(sampled) + ' UTC' : '') +
+          row('Busiest', top[0].name + ' at ' + ctrNum(usageVal(top[0], item.kind)) + '% of host ' + word);
+        note = 'No container was using ' + NEGLIGIBLE_PCT + '% of the host\'s ' + word + ' or more' + (sampled ? ' at ' + utcClock(sampled) + ' UTC' : '') +
           ', so none of them explains the ' + num(item.metric.value) + (item.metric.unit || '') + '. ' +
           (item.kind === 'Memory'
             ? 'The memory is held outside the containers: a process running on the host itself, or cache.'
@@ -421,7 +446,10 @@
               'or a process running on the host itself. It can also be a spike that ended before the sample: check Time over limit on the instance page.');
       } else if (top.length && item.kind !== 'Disk') {
         title = 'Heaviest containers by ' + word;
-        rows = top.map(c => row(c.name, ctrNum(c[key]) + '%' + (key === 'mem_pct' && c.mem_usage ? ' · ' + c.mem_usage : ''), c[key])).join('');
+        rows = top.map(c => row(c.name,
+          (item.kind === 'Memory' && memUsed(c) ? memUsed(c) + ' · ' : '') +
+          ctrNum(usageVal(c, item.kind)) + '% of host',
+          usageVal(c, item.kind))).join('');
         const d = parseUtc(det.containers_updated_at);
         note = 'docker stats' + (d ? ' sampled ' + utcClock(d) + ' UTC' : '') + '. The ' + num(item.metric.value) + (item.metric.unit || '') +
           ' comes from CloudMonitor and describes a slightly different moment.';
@@ -610,6 +638,7 @@
     parseUtc: parseUtc, utcClock: utcClock, utcStamp: utcStamp, span: span, num: num, ctrNum: ctrNum, pct: pct, plural: plural,
     roleName: roleName, roleAbbr: roleAbbr, chip: chip, ring: ring, nodeRing: nodeRing, closest: closest, shortLabel: shortLabel,
     probe: probe, portOf: portOf, shortErr: shortErr, specBits: specBits, sampledAt: sampledAt, heaviest: heaviest, busiest: busiest, ctrBad: ctrBad,
+    usageVal: usageVal, memUsed: memUsed,
     breachInfo: breachInfo, sparkSvg: sparkSvg, runbook: runbook, diagnosticsHtml: diagnosticsHtml, ARROW: ARROW,
     start: start, refresh: refresh, sendAlert: sendAlert, current: () => lastAn
   };

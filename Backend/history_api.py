@@ -20,6 +20,14 @@ Three decisions worth stating, because each one has a tempting wrong answer:
   low" cannot look alike on a chart. Empty buckets are emitted rather than
   skipped so the time axis stays continuous and a monitoring outage is visible
   as a hole.
+* **"No scan ran" and "the metric went quiet" are different answers.** Both leave
+  a hole, and conflating them hides the worse one: a metric stopping is a problem
+  with one agent, while no scan at all means the monitor itself was absent and
+  has nothing to say about that window for ANY instance. Each point therefore
+  carries ``s`` - how many scans ran in its bucket - and the response carries a
+  ``gaps`` list of the windows where that is zero. On 2026-11-25 the monitor
+  hosted on Backend Production was hung while that host breached memory at
+  92.18%; its own history showed a hole that read as "nothing happened".
 * **The bucket width is derived, not requested.** The caller asks for a range and
   roughly how many points it can draw; the server picks a width that is a whole
   multiple of the scan interval. Asking for 8640 points of a 30-day range is
@@ -165,6 +173,22 @@ def metrics_history():
         .all()
     )
 
+    # Did a scan run at all in each bucket? Counted over scan_runs ALONE, not over
+    # the join above: a bucket can hold scans that wrote no row for THIS instance
+    # (it was disabled, or newly added), and that is a different thing from the
+    # monitor not having run. scan_runs is one row per cycle, so this is cheap.
+    run_edge = func.to_timestamp(
+        func.floor(func.extract("epoch", ScanRun.created_at) / bucket) * bucket
+    )
+    run_rows = (
+        db.session.query(run_edge.label("edge"),
+                         func.count(ScanRun.id).label("runs"))
+        .filter(ScanRun.created_at >= start, ScanRun.created_at < end)
+        .group_by(run_edge)
+        .all()
+    )
+    scans_by_edge = {int(r.edge.timestamp()): int(r.runs) for r in run_rows}
+
     meta = _series_meta(inst_id)
     by_label = {}
     for r in rows:
@@ -194,6 +218,9 @@ def metrics_history():
                 "t": datetime.fromtimestamp(e, timezone.utc).isoformat(),
                 "v": round(value, 2) if value is not None else None,
                 "n": count,
+                # 0 == the monitor did not run; >0 with v=None == it ran and the
+                # metric had no datapoint.
+                "s": scans_by_edge.get(e, 0),
             })
         series.append({
             "label": label,
@@ -204,6 +231,27 @@ def metrics_history():
             "points": out,
         })
 
+    # Contiguous stretches with no scan at all, so the UI can label the hole
+    # rather than leaving the reader to guess which kind of hole it is.
+    gaps, run = [], None
+    for e in edges:
+        if scans_by_edge.get(e, 0) == 0:
+            run = run or {"start": e, "buckets": 0}
+            run["buckets"] += 1
+            run["end"] = e
+        elif run:
+            gaps.append(run)
+            run = None
+    if run:
+        gaps.append(run)
+    gap_out = [{
+        "from": datetime.fromtimestamp(g["start"], timezone.utc).isoformat(),
+        # The end edge is a bucket's START, so the window runs to its far side.
+        "to": datetime.fromtimestamp(g["end"] + bucket, timezone.utc).isoformat(),
+        "buckets": g["buckets"],
+        "minutes": round(g["buckets"] * bucket / 60.0, 1),
+    } for g in gaps]
+
     return jsonify(
         instance_id=inst_id,
         instance_name=inst.name if inst else inst_id,
@@ -211,5 +259,6 @@ def metrics_history():
         bucket_seconds=bucket,
         interval_minutes=config.SCAN_INTERVAL_MINUTES,
         retention_days=config.HISTORY_RETENTION_DAYS,
+        gaps=gap_out,
         series=series,
     )

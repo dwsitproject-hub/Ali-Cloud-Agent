@@ -38,6 +38,8 @@ services:
       CORS_ORIGINS: http://localhost:8080
     # Apply migrations + seed, then serve. One worker keeps a single APScheduler;
     # threads give the web side concurrency so a long scan can't block the UI.
+    # `flask seed` is a BOOTSTRAP: it creates instances only when the inventory
+    # is empty, so a restart never re-adds one deleted via the register page.
     command: >
       sh -c "python -m flask db upgrade &&
              python -m flask seed &&

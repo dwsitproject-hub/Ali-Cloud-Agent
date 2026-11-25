@@ -230,6 +230,21 @@ def last_auto_alert_at() -> datetime | None:
     return a.created_at if a else None
 
 
+def last_scan_at():
+    """When the most recent scan ran, or None if there has never been one.
+
+    Read BEFORE the current scan is persisted, so the scheduler can tell how
+    long the monitor was away. `created_at` rather than `scanned_at`: the latter
+    is an ISO string written by the scanner, the former a real timestamptz with
+    an index on it.
+    """
+    run = ScanRun.query.order_by(ScanRun.id.desc()).first()
+    if run is None or run.created_at is None:
+        return None
+    at = run.created_at
+    return at if at.tzinfo else at.replace(tzinfo=timezone.utc)
+
+
 def prune_history(retention_days: int) -> int:
     """Delete scan runs (and cascaded child rows) older than the retention
     window. Returns the number of runs removed. No-op when retention_days<=0.
