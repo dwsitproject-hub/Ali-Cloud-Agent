@@ -111,11 +111,11 @@ function render(an) {
     cp.innerHTML = `<div class="panel-head"><h2>Docker services</h2><span class="small mut">${C.plural(list.length, 'container')}${bad ? ', ' + bad + (bad === 1 ? ' needs attention' : ' need attention') : ''}</span><span class="right">${C.sampledAt(det)}</span></div>
       ${det.containers_error ? `<div class="note-line">${esc(det.containers_error)}</div>` : ''}
       ${list.length ? `<div class="tablewrap"><table class="t" style="min-width:640px">
-        <thead><tr><th scope="col">Service</th><th scope="col" class="num">CPU</th><th scope="col" class="num">Memory</th><th scope="col">Usage</th><th scope="col">Health</th><th scope="col">Status</th></tr></thead>
+        <thead><tr><th scope="col">Service</th><th scope="col" class="num">CPU</th><th scope="col" class="num" title="Share of the host's total RAM - not docker stats MemPerc, which is measured against the container's own mem_limit">Mem % host</th><th scope="col">Mem used</th><th scope="col">Health</th><th scope="col">Status</th></tr></thead>
         <tbody>${sorted.map(c => `<tr title="${esc([c.image, c.ports].filter(Boolean).join(' · '))}">
           <td><span class="mono" style="font-weight:${C.ctrBad(c) || c === heavy ? 600 : 400}">${esc(c.name)}</span>${c === heavy ? ' <span class="tag hot">HEAVIEST</span>' : ''}</td>
-          <td class="num">${C.pct(c.cpu_pct)}</td><td class="num">${C.pct(c.mem_pct)}</td>
-          <td class="num small">${esc(c.mem_usage || '-')}</td>
+          <td class="num">${C.pct(c.cpu_pct)}</td><td class="num">${C.pct(c.mem_pct_host)}</td>
+          <td class="num small">${esc(C.memUsed(c) || '-')}</td>
           <td><span class="tag ${C.ctrBad(c) ? 'warn' : ''}">${esc((c.health || 'unknown').toUpperCase())}</span></td>
           <td class="small mut">${esc(c.status || '')}</td></tr>`).join('')}</tbody></table></div>` : ''}`;
   }
