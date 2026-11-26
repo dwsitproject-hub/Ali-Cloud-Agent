@@ -80,6 +80,14 @@ dashboard shows everything grouped by environment. Access is gated by SSO
   Finds its own database from `DATABASE_URL`; `RDSDIAG_DSNS` (JSON, by instance
   id) lets one monitor reach a managed instance it does not own - production
   alerts for the whole estate, so it needs evidence from ApsaraDB Staging too.
+- `Backend/containers_api.py` - `/api/containers/usage`: per-container memory and
+  CPU over a window, from the `container_samples` rows `containers.refresh()`
+  writes each cycle, plus a `mem_limit` suggestion (peak x `HEADROOM`, rounded).
+  Sizing a cap from the single reading in `Instance.containers_json` is a coin
+  flip both ways: too high protects nothing, too low turns a healthy service into
+  an OOM-kill loop. Reports p95/p99 beside the peak so a one-off excursion is
+  visible as one (`peak_is_an_outlier`), and `enough_samples` so a number standing
+  on four readings does not look like a fortnight's evidence.
 - `Backend/history_api.py` - `/api/metrics/history`: the metric series behind the
   dashboard charts, read from `metric_results` (kept `HISTORY_RETENTION_DAYS`).
   A card answers "is it bad now"; this answers "was it bad, when, for how long".
@@ -106,7 +114,8 @@ dashboard shows everything grouped by environment. Access is gated by SSO
 **API-only backend** (UI is the separate static frontend). GET `/api/status` |
 POST `/api/scan` (`?auto_alert=true`) | POST `/api/send` | GET `/api/csrf` |
 GET `/api/health` (liveness, public) | GET `/api/ready` (readiness: DB + scan
-freshness, public) | GET `/api/metrics/history` (`?instance_id=&hours=` or
+freshness, public) | GET `/api/containers/usage` (`?instance_id=&days=`) |
+GET `/api/metrics/history` (`?instance_id=&hours=` or
 `&from=&to=&points=`; points carry `s` = scans in that bucket, plus a top-level
 `gaps` list of windows where no scan ran) | GET/POST `/api/instances`, GET `/api/instances/meta`,
 PATCH/DELETE `/api/instances/<id>` | GET `/auth/oidc/login` +
@@ -272,6 +281,18 @@ are not duplicated onto every metric row and every history entry.
   `unhealthy`→`restarting` flip is one ongoing problem. One cycle behind by
   construction - `containers.refresh()` runs after the scan is persisted, the same
   lag `for_alert()` already has.
+- **A container memory limit must be sized from a distribution, not a reading.**
+  `Instance.containers_json` holds only the latest sample, so `container_samples`
+  records one row per container per scan (~35k/day at 122 containers and a
+  5-minute interval, ~1M at the 30-day retention, pruned on the same cadence by
+  `containers.prune_samples`). A cap below the real working set converts a healthy
+  service into an OOM-kill loop, so the peak is the figure a limit must clear and
+  p99 says whether that peak is representative. `mem_bytes` is NULL for a stopped
+  container - no usage is not zero usage, and averaging it as 0 would undersize
+  the cap. Note that a container limit alone does not bound a **Node** process:
+  V8 sizes its heap from HOST memory unless `NODE_OPTIONS=--max-old-space-size`
+  is set below the cap, so it grows past the limit and is OOM-killed instead of
+  collecting.
 - Keep the scheduler to ONE process (single APScheduler). State is now in
   Postgres, but the scheduler must still be single; run gunicorn `--workers 1`.
 - The scheduler's background scan + the immediate first scan run inside an

@@ -287,6 +287,56 @@ def _collect_one(target: tuple) -> tuple:
     return inst_id, rows, error
 
 
+def _record_samples(instance_id: str, rows: list, now) -> int:
+    """Append this cycle's usage to container_samples. Returns rows written.
+
+    Called inside refresh()'s write phase, after the SSH is done and the read
+    transaction has been released - adding slow I/O here would reintroduce the
+    `idle in transaction` problem that blocked VACUUM.
+    """
+    if config.CONTAINER_HISTORY_DAYS <= 0 or not rows:
+        return 0
+
+    from db import db
+    from models import ContainerSample
+
+    for c in rows:
+        db.session.add(ContainerSample(
+            instance_id=instance_id,
+            name=(c.get("name") or "?")[:160],
+            image=(c.get("image") or "")[:255],
+            health=(c.get("health") or "")[:20],
+            cpu_pct=c.get("cpu_pct"),
+            mem_bytes=c.get("mem_bytes"),
+            mem_limit_bytes=c.get("mem_limit_bytes"),
+            sampled_at=now,
+        ))
+    return len(rows)
+
+
+def prune_samples(retention_days: int) -> int:
+    """Delete usage samples older than the window. Returns rows removed.
+
+    A bulk DELETE rather than an ORM walk: unlike scan runs there are tens of
+    thousands of these per day and no cascade to honour.
+    """
+    if retention_days <= 0:
+        return 0
+
+    from datetime import timedelta
+
+    from db import db
+    from models import ContainerSample
+
+    cutoff = datetime.now(timezone.utc) - timedelta(days=retention_days)
+    removed = (ContainerSample.query
+               .filter(ContainerSample.sampled_at < cutoff)
+               .delete(synchronize_session=False))
+    if removed:
+        db.session.commit()
+    return removed
+
+
 def refresh() -> int:
     """Update every enabled instance's container list. Returns hosts collected.
 
@@ -323,6 +373,7 @@ def refresh() -> int:
     by_id = {i.id: i for i in Instance.query.filter(Instance.id.in_(wanted)).all()}
     now = datetime.now(timezone.utc)
     collected = 0
+    samples = 0
     for inst_id, rows, error in results:
         inst = by_id.get(inst_id)
         if inst is None:
@@ -332,12 +383,13 @@ def refresh() -> int:
         inst.containers_updated_at = now
         if rows:
             collected += 1
+        samples += _record_samples(inst_id, rows, now)
 
     db.session.commit()
     unhealthy = sum(1 for _, rows, _ in results
                     for c in rows if c["health"] in ("unhealthy", "stopped", "restarting"))
-    log.info("containers: %s/%s host(s) reported, %s container(s) needing attention",
-             collected, len(targets), unhealthy)
+    log.info("containers: %s/%s host(s) reported, %s container(s) needing attention, "
+             "%s sample(s) recorded", collected, len(targets), unhealthy, samples)
     return collected
 
 

@@ -110,6 +110,14 @@ def run_scan_job(auto_alert=None) -> dict:
                      pruned, config.HISTORY_RETENTION_DAYS)
     except Exception:  # pruning must never break a scan cycle
         log.exception("history pruning failed")
+    try:
+        import containers
+        dropped = containers.prune_samples(config.CONTAINER_HISTORY_DAYS)
+        if dropped:
+            log.info("pruned %s container sample(s) older than %s days",
+                     dropped, config.CONTAINER_HISTORY_DAYS)
+    except Exception:
+        log.exception("container sample pruning failed")
 
     return scan
 

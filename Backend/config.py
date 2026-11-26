@@ -247,6 +247,11 @@ DIAG_STRICT_HOST_KEY = _b("DIAG_STRICT_HOST_KEY", False)
 # Runs (and their child metric/service/alert rows) older than this are pruned
 # after each cycle. 0 disables pruning (keep everything).
 HISTORY_RETENTION_DAYS = int(os.getenv("HISTORY_RETENTION_DAYS", "30"))
+# Per-container usage samples, kept so a mem_limit can be sized from a real
+# distribution rather than one reading. ~35k rows/day at 122 containers and a
+# 5-minute interval; set to 0 to stop collecting.
+CONTAINER_HISTORY_DAYS = int(os.getenv("CONTAINER_HISTORY_DAYS",
+                                       str(HISTORY_RETENTION_DAYS)))
 
 # --- Database (PostgreSQL) ---------------------------------------------------
 # Default points at the local docker-compose Postgres (see docker-compose.yml).

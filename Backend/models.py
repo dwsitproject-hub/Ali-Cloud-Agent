@@ -177,6 +177,34 @@ class ServiceResult(db.Model):
     source = db.Column(db.String(20))
 
 
+class ContainerSample(db.Model):
+    """One container's usage at one scan.
+
+    Exists so a `mem_limit` can be set from evidence rather than from a single
+    observation. Instance.containers_json holds only the latest sample, and the
+    question a limit answers - "what is this service's peak over a fortnight" -
+    cannot be asked of it. A cap set below the real working set converts a
+    healthy service into an OOM-kill loop, so guessing is not cheap.
+
+    cpu_pct and mem_bytes are nullable on purpose: a stopped container reports
+    no usage, which is not the same as zero usage.
+    """
+    __tablename__ = "container_samples"
+    id = db.Column(db.BigInteger, primary_key=True, autoincrement=True)
+    instance_id = db.Column(db.String(64), nullable=False)
+    name = db.Column(db.String(160), nullable=False)
+    image = db.Column(db.String(255))
+    health = db.Column(db.String(20))
+    cpu_pct = db.Column(db.Float)                 # share of the whole host
+    mem_bytes = db.Column(db.BigInteger)          # absolute, never MemPerc
+    mem_limit_bytes = db.Column(db.BigInteger)
+    sampled_at = db.Column(db.DateTime(timezone=True), nullable=False, index=True)
+
+    __table_args__ = (
+        db.Index("ix_container_samples_lookup", "instance_id", "name", "sampled_at"),
+    )
+
+
 class Alert(db.Model):
     __tablename__ = "alerts"
     id = db.Column(db.Integer, primary_key=True)
