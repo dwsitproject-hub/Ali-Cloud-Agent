@@ -248,10 +248,15 @@ DIAG_STRICT_HOST_KEY = _b("DIAG_STRICT_HOST_KEY", False)
 # after each cycle. 0 disables pruning (keep everything).
 HISTORY_RETENTION_DAYS = int(os.getenv("HISTORY_RETENTION_DAYS", "30"))
 # Per-container usage samples, kept so a mem_limit can be sized from a real
-# distribution rather than one reading. ~35k rows/day at 122 containers and a
-# 5-minute interval; set to 0 to stop collecting.
-CONTAINER_HISTORY_DAYS = int(os.getenv("CONTAINER_HISTORY_DAYS",
-                                       str(HISTORY_RETENTION_DAYS)))
+# distribution rather than one reading. ~35k rows/day at 122 containers on a
+# 5-minute interval, so ~2.1M rows at 60 days - a few hundred MB of small rows.
+#
+# Longer than HISTORY_RETENTION_DAYS (30) on purpose. A limit is sized once and
+# lived with for months, so the window wants to contain the rare events that
+# decide it: a month-end close, a quarterly report run, a reindex. A fortnight
+# of quiet weeks sizes a service for its quiet weeks. Set to 0 to stop
+# collecting.
+CONTAINER_HISTORY_DAYS = int(os.getenv("CONTAINER_HISTORY_DAYS", "60"))
 
 # --- Database (PostgreSQL) ---------------------------------------------------
 # Default points at the local docker-compose Postgres (see docker-compose.yml).

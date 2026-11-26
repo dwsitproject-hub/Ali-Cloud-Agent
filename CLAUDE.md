@@ -284,8 +284,12 @@ are not duplicated onto every metric row and every history entry.
 - **A container memory limit must be sized from a distribution, not a reading.**
   `Instance.containers_json` holds only the latest sample, so `container_samples`
   records one row per container per scan (~35k/day at 122 containers and a
-  5-minute interval, ~1M at the 30-day retention, pruned on the same cadence by
-  `containers.prune_samples`). A cap below the real working set converts a healthy
+  5-minute interval, ~2.1M at the 60-day `CONTAINER_HISTORY_DAYS`, pruned on the
+  same cadence by `containers.prune_samples`). Kept longer than
+  `HISTORY_RETENTION_DAYS` (30) deliberately: a limit is set once and lived with,
+  so the window should contain the rare events that decide it - a month-end close,
+  a quarterly run - and a fortnight of quiet weeks sizes a service for its quiet
+  weeks. A cap below the real working set converts a healthy
   service into an OOM-kill loop, so the peak is the figure a limit must clear and
   p99 says whether that peak is representative. `mem_bytes` is NULL for a stopped
   container - no usage is not zero usage, and averaging it as 0 would undersize
